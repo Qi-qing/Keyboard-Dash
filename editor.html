@@ -1,0 +1,2386 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Keyboard Dash · 谱面编辑器</title>
+<style>
+  /* 编辑器是给"埋头排谱的人"用的工具：素净、信息密度高，不跟游戏抢美术。
+     唯一跟游戏保持一致的是三排的高度和配色（橘/青/紫），这样两套画面切换不刺眼。
+     注意：任何容器都不要加 backdrop-filter —— 它会让容器变成定位包含块，坑过一次。
+  *  { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  /* 告诉浏览器"这是深色界面"：否则 UA 自己画的东西（滚动条、number 的上下箭头、
+     未指定颜色的原生控件）会按浅色模式渲染成黑字/白底 */
+  html { color-scheme: dark; }
+  /* placeholder 的默认色是 UA 给的深灰（≈rgba(0,0,0,.54)），落在深色底上就是"黑字" */
+  ::placeholder { color: #8fa8b3; opacity: 1; }   /* opacity:1 是给 Firefox 的，它默认半透明 */
+  body {
+    background: #0d1418; color: #dfe7ea;
+    font: 13px/1.6 "Segoe UI", "Microsoft YaHei", sans-serif;
+    display: flex; flex-direction: column; overflow: hidden;
+  }
+  header {
+    flex: 0 0 auto; padding: 8px 12px; background: #101c22;
+    border-bottom: 2px solid #22333c;
+    display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  }
+  header .grp { display: flex; align-items: center; gap: 6px; }
+  header .sp { flex: 1 1 auto; }
+  label.k { color: #bdd2db; }
+  select, input, button, textarea {
+    background: #17262d; color: #dfe7ea; border: 1px solid #2b3d47;
+    padding: 4px 8px; font: inherit; border-radius: 3px;
+  }
+  input[type=number] { width: 62px; }
+  /* 滑杆：基础样式里的 padding/border 套在 range 上会很丑，这里抹掉重新给宽 */
+  input[type=range] { width: 74px; padding: 0; border: 0; vertical-align: middle; accent-color: #35d6e0; }
+  #offRange { width: 132px; }
+  button { cursor: pointer; }
+  button:hover { border-color: #4a6b7a; background: #1d3038; }
+  button:disabled { opacity: .42; cursor: not-allowed; }
+  button.pri { background: #17494c; border-color: #35d6e0; color: #bdf3f7; }
+  .vip { color: #35d6e0; }
+  /* 谱面档位标签：当前档亮青边，已经排了 note 的档在名字后加个点，
+     一眼看出这首歌哪几档是做过的——它决定游戏里出现哪几个难度按钮 */
+  .dtab { padding: 4px 10px; letter-spacing: 1px; }
+  .dtab.on { border-color: #35d6e0; color: #bdf3f7; background: #17494c; }
+  /* 试听相关的三个开关：亮青边 = 开 */
+  #btnPlay.on, #btnMetro.on, #btnSfx.on {
+    border-color: #35d6e0; color: #bdf3f7; background: #17494c;
+  }
+  .dtab.filled::after { content: '·'; color: #ffd166; }
+  #main { flex: 1 1 auto; display: flex; min-height: 0; }
+  #left { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; }
+  #cvWrap { flex: 1 1 auto; position: relative; overflow: hidden; }
+  canvas { display: block; width: 100%; }
+  #readout {
+    flex: 0 0 auto; padding: 4px 12px; background: #0f1a1f;
+    border-top: 2px solid #22333c; color: #bcd6de; font-family: Consolas, monospace;
+  }
+  #side {
+    flex: 0 0 340px; background: #0f1a1f; border-left: 2px solid #22333c;
+    overflow-y: auto; padding: 10px; display: flex; flex-direction: column; gap: 10px;
+  }
+  .card { background: #14212a; border: 1px solid #24343e; padding: 8px; }
+  .card h3 {
+    margin: 0 0 6px; font: 500 13px/1.4 inherit; color: #cfe6ec;
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  /* 原文框：改了没点应用就把边框染黄，否则"我到底应用了没"只能靠猜。
+     用户不要填充背景，只要一个框 —— 所以背景透明，靠边框勾出来 */
+  textarea#lyric {
+    width: 100%; height: 78px; resize: vertical; font-family: Consolas, monospace;
+    font-size: 13px; line-height: 1.65; padding: 6px 8px; border-radius: 6px;
+    background: transparent; border-color: #35505e;
+  }
+  textarea#lyric:focus {
+    outline: none; border-color: #35d6e0; box-shadow: 0 0 0 2px rgba(53, 214, 224, .18);
+  }
+  textarea#lyric.dirty { border-color: #ffd166; }
+  #lyricMeta { font-size: 12px; color: #bdd2db; }
+
+  /* 字符流：一格一个单元，按原文的换行断行。
+     position:relative 是给 followCur() 用的 —— chip 的 offsetTop 得相对这个滚动容器算 */
+  #stream {
+    position: relative;
+    display: flex; flex-wrap: wrap; align-content: flex-start;
+    gap: 3px; max-height: 224px; overflow-y: auto; padding: 2px;
+    font-family: Consolas, monospace; font-size: 14px; line-height: 1.45;
+  }
+  .u {
+    min-width: 20px; padding: 1px 5px; border-radius: 4px; text-align: center;
+    border: 1px solid #24343e; color: #a9c2cb; background: #101d23;
+  }
+  .u.nl { color: #74a3b3; }                 /* 原文的换行：淡一点，只当分隔 */
+  .u.done { color: #d9f3f6; background: #1d4a55; border-color: #35d6e0; }
+  /* 双写（只能 hold）用 outline 画第二圈：1px 的 border-style:double 渲染不出来，
+     而加粗 border 会把这一格撑大、整排变歪 */
+  .u.dbl { outline: 1px solid #4a6b7a; outline-offset: 1px; }
+  .u.cur {
+    color: #2a1f06; background: #ffd166; border-color: #ffd166; font-weight: 500;
+    box-shadow: 0 0 0 2px rgba(255, 209, 102, .22);
+  }
+  .u.cur.shake { animation: sh .26s linear 1; }
+  .u.off { color: #6d848e; background: transparent; border-style: dashed; }  /* 被 → 跨过去的空拍槽 */
+  .brk { flex-basis: 100%; height: 0; }                                    /* 只负责断行，不占位 */
+  @keyframes sh { 0%,100%{transform:translateX(0)} 25%{transform:translateX(-3px)} 75%{transform:translateX(3px)} }
+  .pbar {
+    height: 4px; margin-bottom: 7px; border-radius: 3px; overflow: hidden;
+    background: #0f1a1f; border: 1px solid #24343e;
+  }
+  .pbar i { display: block; height: 100%; width: 0; background: #35d6e0; transition: width .12s linear; }
+  #issues { max-height: 130px; overflow-y: auto; }
+  #issues .it { color: #e0915c; border-bottom: 1px dashed #24403a; padding: 2px 0; cursor: pointer; }
+  #issues .it:hover { color: #ffb27a; background: #1a2b33; }
+  #issues .none { color: #a3bcc6; }
+  kbd {
+    background: #17262d; border: 1px solid #2b3d47; border-radius: 3px;
+    padding: 0 4px; font-family: Consolas, monospace; color: #b9d3dc;
+  }
+  .row2 { display: flex; gap: 6px; align-items: center; }
+  /* 按钮上的键名提示：跟正文拉开一个班次，不抢按钮本身的字 */
+  .kb { margin-left: 5px; padding: 0 3px; font-size: 11px; color: #bdd2db; background: #0f1a1f; }
+  #toast {
+    position: absolute; left: 50%; bottom: 18px; transform: translateX(-50%);
+    background: #1d3b44; border: 1px solid #35d6e0; color: #cdf4f8;
+    padding: 6px 14px; opacity: 0; transition: opacity .18s; pointer-events: none;
+  }
+  #toast.on { opacity: 1; }
+  #overlay {
+    position: absolute; inset: 0; background: rgba(6,12,15,.86);
+    display: flex; align-items: center; justify-content: center;
+  }
+  /* 必须显式写这条：上面的 display:flex 是作者样式，会盖掉浏览器自带的
+     [hidden]{display:none}，只设 hidden 属性根本关不掉这个弹层。 */
+  #overlay[hidden] { display: none; }
+  #overlay .box { width: 80%; max-width: 780px; background: #14212a; border: 1px solid #35d6e0; padding: 12px; }
+  #overlay textarea { width: 100%; height: 340px; font-family: Consolas, monospace; }
+  /* 曲目管理：一行一首，右侧是删除按钮。曲名是用户自己填的，一律先转义再拼进 HTML */
+  #ovList[hidden] { display: none; }
+  #ovList .mrow {
+    display: flex; align-items: center; gap: 10px; padding: 5px 4px;
+    border-bottom: 1px solid #22333c;
+  }
+  #ovList .mrow .nm { flex: 0 0 34%; color: #dfe7ea; }
+  #ovList .mrow .meta { flex: 1 1 auto; color: #bdd2db; font-family: Consolas, monospace; font-size: 12px; }
+  #ovList .mrow .del { flex: 0 0 auto; border-color: #7a3b46; color: #e0915c; }
+  #ovList .mrow .del:hover { background: #3a1f26; border-color: #ff5a6a; color: #ffb27a; }
+  #ovList .fixed { flex: 0 0 auto; color: #a3bcc6; font-size: 12px; }
+  #ovList .ok { color: #86c9a1; }
+  #ovList .warn { color: #e0915c; }
+  #ovFoot { margin-top: 8px; padding-top: 8px; border-top: 1px solid #22333c; color: #bdd2db; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="grp">
+    <label class="k" for="song">曲目</label>
+    <select id="song"></select>
+    <!-- 新歌两个入口：要么直接挑本机上的 mp3（立刻能听，地址会被记住），
+         要么把 mp3 拷进项目 songs/ 再点「扫 songs/」（这样游戏那边也能用同一个相对路径）。 -->
+    <button id="btnAudio" title="挑一个本机音频文件来试听/对拍（地址会记在浏览器里，下次自动带回来）">＋ 载入音频</button>
+    <button id="btnScan" title="检查 songs/ 里的音频能不能放。浏览器列不出目录，所以会请你手填文件名 —— 新放的 mp3 靠它登记">扫 songs/</button>
+    <input id="audioIn" type="file" accept="audio/*" hidden>
+    <button id="btnSongAdd" title="把当前音频登记成一首歌（写在本机，游戏那边要用相对路径才认）">存为曲目</button>
+    <button id="btnSongDel" title="删掉不要的曲目、清空谱面、清理孤儿存档">🗑 管理/删除</button>
+  </div>
+  <div class="grp">
+    <label class="k" for="bpm">BPM</label>
+    <input id="bpm" type="number" min="40" max="300" step="1">
+    <!-- 半速/倍速纠偏常驻：实测 174 会被听成 87、64 会被听成 128，
+         这是自相关的固有歧义，不是 bug。对手动填的 BPM 同样管用 -->
+    <button id="btnBpm" title="听一遍音频猜 BPM。只认节拍不认旋律；猜完听着慢/快了一半就按旁边的 ×2 / ÷2">🎵 测速</button>
+    <button id="bpmDbl" title="听着慢了一半就按这个（174 容易被听成 87）">×2</button>
+    <button id="bpmHalf" title="听着快了一半就按这个（64 容易被听成 128）">÷2</button>
+  </div>
+  <div class="grp">
+    <label class="k" for="offNum">整体偏移</label>
+    <button id="offMinus" title="整谱相对音频提前 10ms">−10ms</button>
+    <button id="offPlus" title="整谱相对音频延后 10ms">+10ms</button>
+    <input id="offNum" type="number" step="1" title="直接填毫秒，回车生效（正 = 整谱延后）">
+    <span class="k">ms</span>
+    <input id="offRange" type="range" min="-500" max="500" step="1" title="拖动调谱面延迟，手感跟游戏本体的校准滑杆一样">
+  </div>
+  <div class="grp">
+    <label class="k" title="关卡只占音频的哪一段。只写进导出结果，音频文件本身不动">裁剪</label>
+    <input id="trimA" type="number" step="0.1" min="0" title="关卡从音频第几秒起播（留空/0 = 跟着整体偏移）。比它更早的 note 会被裁掉">
+    <span class="k">→</span>
+    <input id="trimB" type="number" step="0.1" min="0" title="关卡在音频第几秒结束（留空/0 = 一直放到文件末尾）">
+    <button id="trimAHere" title="把当前播放头所在的那秒设为关卡起点">设起点</button>
+    <button id="trimBHere" title="把当前播放头所在的那秒设为关卡终点">设终点</button>
+    <button id="trimAll" title="取消裁剪：整首">整首</button>
+    <span id="trimInfo" class="k"></span>
+  </div>
+  <div class="grp">
+    <label class="k">谱面档位</label>
+    <button class="dtab" data-d="easy">EASY</button>
+    <button class="dtab" data-d="normal">NORMAL</button>
+    <button class="dtab" data-d="hard">HARD</button>
+  </div>
+  <div class="grp">
+    <label class="k" for="snap">吸附</label>
+    <select id="snap">
+      <option value="1">1 拍</option>
+      <option value="0.5">1/2 拍</option>
+      <option value="0.25">1/4 拍</option>
+      <option value="0.125">1/8 拍</option>
+    </select>
+  </div>
+  <div class="grp">
+    <button id="zoomOut">−</button><span id="zoomVal" class="vip">96</span><button id="zoomIn">＋</button>
+  </div>
+  <div class="sp"></div>
+  <div class="grp">
+    <button id="btnPlay" title="空格：从播放头开始试听">试听 ▶</button>
+    <button id="btnMetro" title="按当前 BPM 打咔哒声，用来对鼓点">节拍器</button>
+    <input id="metroVol" type="range" min="0" max="100" step="1" title="节拍器音量">
+    <button id="btnSfx" title="播放头经过 note 时的击中音">击中音</button>
+    <input id="sfxVol" type="range" min="0" max="100" step="1" title="打击音音量">
+    <button id="btnDrum">鼓点模式</button>
+    <button id="btnSave" class="pri">保存<span class="kb">Ctrl+S</span></button>
+    <button id="btnJson">导出 JSON</button>
+    <button id="btnImport">导入 JSON</button>
+    <input id="fileIn" type="file" accept=".json" hidden>
+    <button id="btnSnip">复制 notes 片段</button>
+    <button id="btnEntry" class="pri">导出完整关卡条目</button>
+    <button id="btnPush" class="pri" title="直接写进本机存储，游戏里立刻能看到">推送到游戏 ▶</button>
+    <button id="btnCode" title="压成一段文字，发群里别人粘贴就能玩">生成关卡码</button>
+    <button id="btnRoll" title="把当前档整段往后推一拍，用来弥补开始位置选得不准">整体挪 1 拍<span class="kb">Ctrl+Shift+→</span></button>
+  </div>
+</header>
+
+<div id="main">
+  <div id="left">
+    <div id="cvWrap">
+      <canvas id="cv"></canvas>
+      <div id="toast"></div>
+    </div>
+    <div id="readout"></div>
+  </div>
+  <aside id="side">
+    <div class="card">
+      <h3>原文（可改，改完点应用）</h3>
+      <textarea id="lyric" spellcheck="false" placeholder="把歌词或台词粘进来，字母会变成下面可排的字符流"></textarea>
+      <div class="row2" style="margin-top:6px">
+        <button id="btnApply">应用</button>
+        <span id="lyricMeta"></span>
+      </div>
+      <div id="lyricInfo" style="color:#bdd2db;margin-top:4px"></div>
+    </div>
+    <div class="card">
+      <h3>字符流进度 <span id="prog" style="color:#bdd2db"></span></h3>
+      <div class="pbar"><i id="progFill"></i></div>
+      <div id="stream"></div>
+    </div>
+    <div class="card">
+      <h3>校验清单 <span id="issueCount" style="color:#bdd2db"></span></h3>
+      <div id="issues"><div class="none">—</div></div>
+    </div>
+    <div class="card">
+      <h3>快捷键</h3>
+      <div>
+        <kbd>A-Z</kbd> 放 note · <kbd>→</kbd> 步进 / 跨空拍槽 · <kbd>←</kbd> 回退
+        <kbd>Ctrl+←/→</kbd> 整拍
+      </div>
+      <div><kbd>Backspace</kbd> 回退上一次放置 · <kbd>Ctrl+Z</kbd> 撤销</div>
+      <div><kbd>Tab</kbd> 选中项 普通↔hold · 拖 notes 改时间 / 拖尾端改时长</div>
+      <div><kbd>Ctrl+Shift+←/→</kbd> 整档谱面挪一拍（开始位置选偏了用它）</div>
+      <div><kbd>右键</kbd> 删除 · <kbd>空格</kbd> 从播放头试听 · <kbd>双击</kbd> 从点到的位置起播</div>
+      <div>试听中：判定线不动、谱面往左滚，note 撞上判定线就消失（跟游戏里一个感觉）</div>
+      <div>导出/导入 JSON 都是整首歌的三档一起搬：文件名带档位，导入按难度归位</div>
+    </div>
+  </aside>
+</div>
+
+<!-- 试听音频：相对路径，file:// 下直接能放（绝不用 fetch 读本地文件） -->
+<audio id="au" preload="auto"></audio>
+
+<div id="overlay" hidden>
+  <div class="box">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+      <span class="vip" id="ovTitle">LEVELS 片段（剪贴板不可用，请手动全选复制）</span>
+      <button id="btnCloseOver">关闭</button>
+    </div>
+    <textarea id="snipText"></textarea>
+    <div id="ovList" hidden></div>
+  </div>
+</div>
+
+<script>
+/* =====================================================================
+   Keyboard Dash · 谱面编辑器 v2.0a
+   ---------------------------------------------------------------------
+   与游戏本体 index.html 是两个互不相干的 app：不引它的文件、不引它的 CSS，
+   两边唯一的桥梁是「谱面 JSON 契约」：
+       { song, bpm, offset, notes:[ {t, letter, type, dur} ] }   ← t/dur 单位：秒
+   本文件内部一律以「拍」为单位存 note 的位置和时长，
+   bpm / offset 只是导出时的换算旋钮 —— 改 BPM 全谱自动重排为另一套秒数，
+   画面（拍号网格）不受影响。这是刻意的设计：编辑器调的是"在哪一拍"，不是"在第几像素"。
+   ===================================================================== */
+
+/* ---------- ① 歌曲注册表 ----------
+   SONGS 是"官方"曲目，新增时要同步 index.html 的 LEVELS（曲名/音频路径/bpm 一致）。
+   MY_SONGS 是你在编辑器里自己加的（「存为曲目」写进 localStorage），
+   和 SONGS 一样参与选曲，但**不进 index.html** —— 游戏那边要么走自制谱推送，
+   要么手工把条目粘进 LEVELS。两边都读同一个 songOf()，所以下面的代码不关心它从哪来。
+   text 是打字铺谱的原文；没有原文也能排谱（字母键敲什么落什么），只是没有字符流提示。 */
+const SONGS = [
+  {
+    id: 'nggyu',
+    levelId: 0,                                 // 与 index.html 的 LEVELS 里的 id 对应
+    title: 'Never Gonna Give You Up',
+    file: 'songs/Never gonna give you up.mp3',
+    // hint = 音频从哪儿弄。谱面本身不带音乐（合成器只有节拍、没有旋律），
+    // 所以自制谱发出去时，这句说明是对方补齐 mp3 的唯一线索。
+    hint: '原曲音频放 songs/ 目录，或自己去找同名专辑',
+    bpm: 113,
+    offset: 0,
+    text: 'i just wanna tell you how im feeling\n' +
+          'gotta make you understand\n' +
+          'never gonna give you up\n' +
+          'never gonna let you down\n' +
+          'never gonna run around and desert you\n' +
+          'never gonna make you cry\n' +
+          'never gonna say goodbye\n' +
+          'never gonna tell a lie and hurt you',
+  },
+];
+
+/* 浏览器不能列目录（file:// 下连 fetch 都不行），所以"songs/ 里有什么"只能靠下面两条探针：
+   ① 已知文件名 → <audio> 试着 load 一下，能拿到时长就是有；
+   ② 手动挑本机文件 → 立刻可用，但地址是 blob: 的临时地址，关掉页面就失效，
+      所以在保存谱面/导出前必须提醒"把 mp3 拷进 songs/"，否则游戏开不了局。 */
+const MY_KEY = 'kbdash.editor.mysongs.v1';
+const LAST_AUDIO_KEY = 'kbdash.editor.lastaudio.v1';
+const SONG_FILE_DIR = 'songs/';
+
+/* 本次会话里亲手创建过的 blob: 地址。
+   **跨会话 blob 一定失效**，而一个失效的地址会让整首歌开不了局（且报错很难懂）。
+   所以只有这里登记过的才敢用；读档时碰到的任何"没登记过的 blob"一律当不存在。 */
+const liveBlobs = new Set();
+
+/* 这个地址现在真的能用吗：相对路径永远可用；blob 必须还在 liveBlobs 里 */
+function usableSrc(s) {
+  if (!s) return '';
+  if (String(s).startsWith('blob:')) return liveBlobs.has(s) ? s : '';
+  return s;
+}
+
+function loadMySongs() {
+  try {
+    const a = JSON.parse(localStorage.getItem(MY_KEY));
+    return Array.isArray(a) ? a : [];
+  } catch (e) { return []; }
+}
+
+function saveMySongs(a) {
+  try { localStorage.setItem(MY_KEY, JSON.stringify(a)); return true; }
+  catch (e) { toast('存不下：浏览器本地存储已满或被禁'); return false; }
+}
+
+/* 曲目总表 = 官方 + 自己加的。id 撞了以自己加的为准（方便改标题/换音频） */
+function allSongs() {
+  const mine = loadMySongs();
+  const ids = new Set(mine.map(s => s.id));
+  return mine.concat(SONGS.filter(s => !ids.has(s.id)));
+}
+
+/* 三排键位与配色抄自游戏本体（ROWS），保持纵向布局与配色一致 */
+const ROWS = [
+  { letters: 'qwertyuiop', color: '#ff9d3c', band: 'rgba(255,157,60,.07)' },
+  { letters: 'asdfghjkl',  color: '#35d6e0', band: 'rgba(53,214,224,.07)' },
+  { letters: 'zxcvbnm',    color: '#a86bff', band: 'rgba(168,107,255,.08)' },
+];
+const LETTER_ROW = {};
+ROWS.forEach((r, i) => { for (const c of r.letters) LETTER_ROW[c] = i; });
+
+/* 双写单元：文本生成器把这类连续双字母合成一条 hold，编辑器跟着做同一件事 */
+const DOUBLES = ['ll', 'tt', 'ee', 'ss', 'oo'];
+const DEFAULT_HOLD_BEATS = 2;             // 双写单元生成的 hold 长度
+const UNDO_MAX = 50;
+const STORE_PREFIX = 'kbdash_editor_v1_';
+
+/* 版面尺寸：鼓点行 + 三排 + 底部拍号条 */
+const L = { drumH: 38, rowH: 68, rulerH: 26, noteR: 15, drumW: 26 };
+const DPR = Math.min(window.devicePixelRatio || 1, 2);
+
+const cv = document.getElementById('cv');
+const ctx = cv.getContext('2d');
+const el = id => document.getElementById(id);
+
+/* ---------- ② 状态 ---------- */
+let st = null;          // 当前工程，见 blankState()
+let undoStack = [];
+let drag = null;        // 拖拽上下文
+let rejectAt = 0;       // 敲错时刻，播放头红闪用
+let badNotes = new Set();   // 校验不顺的 note，画红框（refresh() 里随谱面重算）
+let W = 900;
+
+/* 三个难度各一份独立谱，互不共用：notes/marks/head 是当前档的，
+   切档时把当前档存进 diffs、把目标档取出来，bpm/offset 整首歌共用。 */
+const DIFFS = ['easy', 'normal', 'hard'];
+
+function blankState(song) {
+  return {
+    song: song.id, bpm: song.bpm, offset: song.offset, snap: 1, diff: 'normal',
+    notes: [], marks: [], head: 0, pxPerBeat: 96, viewBeat: -1,
+    diffs: {}, drumMode: false, text: song.text, dirty: false,
+    metro: false, sfx: true,                  // 试听的两个开关（本回合的 UI 偏好，不进存档）
+    // 音频来源必须跟着曲目走：不带上的话，换到一首没音频的歌时
+    // selectSong 会读到上一首残留的 st.src，结果"换了歌还是在放旧的那首"
+    src: song.src || '', file: song.file || '', audioName: '',
+    // 裁剪窗口，**音频秒**（不是拍）。0 = 那一端不裁。
+    // 它和「整体偏移」是两回事：偏移是把整张谱相对音频滑动（对拍用），
+    // 裁剪是划定"关卡占音频的哪一段"（导出用），note 在音频里的位置一动不动。
+    trimFrom: 0, trimTo: 0,
+  };
+}
+
+/* 切档：先把当前档存好，再取出目标档（没排过就是空的），撤销栈跟着清空 */
+function switchDiff(k) {
+  if (k === st.diff || !DIFFS.includes(k)) return;
+  st.diffs[st.diff] = { notes: st.notes, marks: st.marks, head: st.head };
+  const t = st.diffs[k];
+  st.notes = t ? t.notes : [];
+  st.marks = t ? t.marks : [];
+  st.head = t ? t.head : 0;
+  st.diff = k; st.sel = null;
+  undoStack = [];
+  toast('切到 ' + k.toUpperCase() + '（各档谱面独立，互不共用）');
+  refresh();
+}
+
+/* 这一档排了多少 note（档位标签上的那个点用它决定要不要亮） */
+function diffCount(k) {
+  if (k === st.diff) return st.notes.length;
+  return st.diffs[k] ? st.diffs[k].notes.length : 0;
+}
+
+/* =====================================================================
+   ③ 单位换算：拍 ↔ 秒
+   ===================================================================== */
+function spb() { return 60 / st.bpm; }                    // 每拍多少秒
+function secOf(beat) { return st.offset + beat * spb(); }  // 拍 → 秒（导出）
+function xOfBeat(beat) { return (beat - st.viewBeat) * st.pxPerBeat; }
+function beatOfX(x) { return st.viewBeat + x / st.pxPerBeat; }
+function rowY(i) { return L.drumH + L.rowH * i + L.rowH / 2; }
+function canvasH() { return L.drumH + L.rowH * ROWS.length + L.rulerH; }
+
+/* 吸附：所有横向拖动/落点都要走它，保证 note 永远停在网格点上是唯一入口 */
+function quant(b) {
+  const s = st.snap;
+  return Math.round(b / s) * s;
+}
+function clampBeat(b) { return Math.max(0, Math.round(b * 1000) / 1000); }
+
+/* =====================================================================
+   ④ 字符流：原文 → 若干个「单元」
+   单元只有四种：letter（单字母）/ double（双写，只能 hold）/ gap（空格标点换行）
+   note 记的是它占了第几个单元（u），所以「当前该打哪个」永远是推出来的，
+   不存在单独的游标变量跟谱面打架。
+   ===================================================================== */
+function parseUnits(text) {
+  const out = [];
+  for (let i = 0; i < text.length;) {
+    const u = unitAt(text, i);
+    out.push(u);
+    i += u.text.length;                        // 换行的 ⏎ 维持原长 1，游标推进才不会错位
+  }
+  return out;
+}
+
+/* 从一个字符认出它是哪一种单元。三种：普通字母 / 双写（只能 hold）/ 空拍槽 */
+function unitAt(text, i) {
+  const ch = text[i].toLowerCase();
+  if (!/[a-z]/.test(ch)) return { kind: 'gap', text: ch === '\n' ? '⏎' : ch };
+  const pair = ch + (text[i + 1] || '').toLowerCase();
+  if (DOUBLES.includes(pair)) return { kind: 'double', text: pair };
+  return { kind: 'letter', text: ch };
+}
+
+let units = [];
+
+/* 一个单元是不是已经被「安排」了：排出 note 了，或者被 → 跨过去了 */
+function unitTaken(i) {
+  if (st.marks.includes(i)) return true;
+  return st.notes.some(n => n.u === i);
+}
+/* 下一个待处理的单元下标；全部排完返回 -1 */
+function cursorUnit() {
+  for (let i = 0; i < units.length; i++) if (!unitTaken(i)) return i;
+  return -1;
+}
+
+/* 整档谱面挪一拍（Ctrl+Shift+←/→）。
+   用途：开始在"第几拍"上踩偏了（前奏抓不准、数错拍），整段一起挪比逐颗拖省事。
+   为什么挪**拍**而不是挪毫秒：谱面是建在拍网格上的，挪整数拍后所有 note 仍然落在网格上；
+   0.5 拍这种半格偏移用「整体偏移 ±10ms」那个旋钮去补。
+   往前挪不许把任何一颗推成负数 —— 有一颗顶到 0 就整档不动，别悄悄把谱面切成两半。 */
+function rollChart(dir) {
+  if (!st.notes.length) { toast('这一档还没排过 note'); return; }
+  const far = st.notes.reduce((m, n) => dir < 0 ? Math.min(m, n.b) : Math.max(m, n.b), Infinity);
+  if (dir < 0 && far < 1 - 1e-9) { toast('已经贴着开头，再往前会挪出负数'); return; }
+  pushUndo();
+  st.notes.forEach(n => { n.b = clampBeat(Math.max(0, n.b + dir)); });
+  st.head = clampBeat(Math.max(0, st.head + dir));
+  follow();
+  st.dirty = true;
+  toast('整档 ' + (dir > 0 ? '往后' : '往前') + '挪 1 拍 ✓（末颗落在第 ' + endBeat() + ' 拍）');
+  refresh();
+}
+
+/* 这一档最后一颗 note 的结束拍（hold 算尾巴）。推谱、挪谱后用它核对总长。
+   名字别叫 lastBeat —— 那是节拍器记"上一次响在第几拍"的游标，两个不是一回事。 */
+function endBeat() {
+  const e = st.notes.reduce((m, n) => Math.max(m, n.b + (n.d || 0)), 0);
+  return Math.round(e * 100) / 100;
+}
+
+/* =====================================================================
+   ⑤ 撤销栈：存快照（一次性序列化整个工程，简单且不会漏记录任何一种操作）
+   ===================================================================== */
+function pushUndo() {
+  // bpm / offset 也进快照：导入和 ±10ms 会改它们，不然撤销只能退回 note、退不回秒数
+  undoStack.push(JSON.stringify({
+    n: st.notes, m: st.marks, h: st.head, bpm: st.bpm, off: st.offset,
+    tf: st.trimFrom || 0, tt: st.trimTo || 0,      // 裁剪窗口也进快照，不然撤销退不回
+  }));
+  if (undoStack.length > UNDO_MAX) undoStack.shift();
+}
+function popUndo(label) {
+  const s = undoStack.pop();
+  if (!s) { toast((label || '没有') + '：撤销栈已空'); return; }
+  const o = JSON.parse(s);
+  st.notes = o.n; st.marks = o.m; st.head = o.h;
+  if (o.bpm) st.bpm = o.bpm;
+  if (typeof o.off === 'number') st.offset = o.off;
+  st.trimFrom = +o.tf || 0; st.trimTo = +o.tt || 0;
+  st.sel = null; st.dirty = true;
+  toast((label || '撤销') + ' ✓');
+  refresh();
+}
+
+/* =====================================================================
+   ⑥ 放 / 删 / 改
+   --------------------------------------------------------------------
+   字符流只做「提示」，不设关卡：面板上亮着的那一格只是"接下来原文里的下一个字"，
+   按下任何字母都会落谱。不再有"该敲 X / 打错了"的拦截 —— 做谱时经常要回头补
+   一颗、或临时跳几个字，锁着只会挡路。像 IDE 的自动补全：建议在那儿，你无视它也照样能敲。
+   ===================================================================== */
+/* 落一颗：字母与键位排都按按下的那个键来，位置落在播放头上。
+   撤销快照在这里拍 —— 只有真的要改了才进栈，敲个数字不该留下一条空记录。 */
+function placeLetter(letter) {
+  const low = letter.toLowerCase();
+  if (!(low in LETTER_ROW)) { reject('这个键在三条轨道之外'); return null; }
+  pushUndo();
+  const b = clampBeat(st.head);
+  const n = { b, type: 'single', letter: low, row: LETTER_ROW[low], d: 0, u: matchUnit(low, b) };
+  st.notes.push(n);
+  st.head = clampBeat(b + st.snap);        // 下一步推到下一格
+  st.sel = n;
+  st.notes.sort((a, c) => a.b - c.b);
+  st.dirty = true;
+  follow();
+  return n;
+}
+
+/* 这颗 note 占了原文里的哪一格：只对得上的才挂，挂不上就 -1（不影响任何功能） */
+function matchUnit(letter, b) {
+  const i = cursorUnit();
+  if (i < 0 || units[i].kind === 'gap' || units[i].text[0] !== letter) return -1;
+  return i;
+}
+
+/* 提示：下一个该打的字是谁、在原文哪儿。没有任何强制性，纯参考 */
+function hintUnit() { return cursorUnit(); }
+
+function reject(msg) {
+  rejectAt = performance.now();
+  const cur = document.querySelector('.u.cur');
+  if (cur) { cur.classList.remove('shake'); void cur.offsetWidth; cur.classList.add('shake'); }
+  toast(msg);
+  draw();
+}
+
+/* 右键删除：note 撤走，它占的字符槽自动空出来（Ctrl+Z 能找回，→ 也能再跨一次） */
+function removeNote(n) {
+  const k = st.notes.indexOf(n);
+  if (k < 0) return;
+  pushUndo();
+  st.notes.splice(k, 1);
+  if (st.sel === n) st.sel = null;
+  st.dirty = true;
+  toast('已删除 ✓（Ctrl+Z 找回）');
+  refresh();
+}
+
+/* Tab：普通 ↔ hold 互转。转成 hold 时给默认 1 拍，尾端能拖长 */
+function toggleHold(n) {
+  if (!n || n.type === 'drum') { reject('选中的是鼓点'); return; }
+  pushUndo();
+  if (n.type === 'hold') { n.type = 'single'; n.d = 0; }
+  else { n.type = 'hold'; n.d = n.d || 1; }
+  st.dirty = true;
+  refresh();
+}
+
+/* =====================================================================
+   ⑦ 画面绘制：全部临时由「拍」算 x，没有任何逐帧位移
+   ===================================================================== */
+function draw() {
+  if (!st) return;
+  const H = canvasH();
+  // 试听中：把视野钉成"判定线固定、谱面往左滚"，跟游戏里一个感觉
+  if (playing) st.viewBeat = st.head - JUDGE_X / st.pxPerBeat;
+  ctx.clearRect(0, 0, W, H);
+  drawRows(H);
+  drawGrid(H);
+  drawNotes();
+  drawPlayhead(H);
+  if (playing) drawJudgeLine(H);
+}
+
+/* 判定线：试听时它不动，note 撞上来就消失 —— 播放头由它兼任 */
+function drawJudgeLine(H) {
+  const x = Math.round(JUDGE_X) + .5;
+  ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 2;
+  ctx.setLineDash([7, 5]);
+  ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
+  ctx.setLineDash([]);
+}
+
+/* 播放中：已经滚过判定线的部分不再往左画，钉在判定线上（跟游戏"按住中"一个样子） */
+function playX(x) { return playing ? Math.max(x, JUDGE_X) : x; }
+
+function drawRows(H) {
+  ctx.fillStyle = '#0b1519';
+  ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = '#0f1a20';
+  ctx.fillRect(0, 0, W, L.drumH);
+  ROWS.forEach((r, i) => {
+    const y = L.drumH + L.rowH * i;
+    ctx.fillStyle = r.band;
+    ctx.fillRect(0, y, W, L.rowH);
+    ctx.strokeStyle = 'rgba(255,255,255,.06)';
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
+  });
+  ctx.fillStyle = 'rgba(255,255,255,.10)';
+  ctx.fillRect(0, H - L.rulerH, W, L.rulerH);
+}
+
+/* 网格：吸附精度是细线，每拍是中粗线，每 4 拍（一小节）是亮线并标拍号 */
+function drawGrid(H) {
+  // 吸附精度是细线，但 1/8 拍在小缩放下会糊成一片 —— 细线太密就只画整拍和拍号
+  const dense = st.snap * st.pxPerBeat < 7;
+  const step = dense ? 1 : st.snap, from = Math.floor(st.viewBeat / 4) * 4;
+  const to = beatOfX(W) + 1;
+  for (let b = from; b <= to; b = +(b + step).toFixed(4)) {
+    if (b < -0.0001) continue;
+    const x = Math.round(xOfBeat(b)) + .5;
+    const bar = Math.abs(b % 4) < 1e-6, whole = Math.abs(b % 1) < 1e-6;
+    ctx.strokeStyle = bar ? 'rgba(255,255,255,.30)' : whole ? 'rgba(255,255,255,.16)' : 'rgba(255,255,255,.07)';
+    ctx.lineWidth = bar ? 2 : 1;
+    ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
+    if (bar) {
+      ctx.fillStyle = '#bdd2db';
+      ctx.font = '11px Consolas, monospace';
+      ctx.textAlign = 'left';
+      ctx.fillText('第 ' + b + ' 拍', x + 3, H - 8);
+    }
+  }
+}
+
+function drawNotes() {
+  // 同一拍上的多颗 → 双押，画个金色圈提示（判定端由游戏按时间自行配对）
+  const seen = new Map();
+  st.notes.forEach(n => {
+    const key = n.b.toFixed(3);
+    seen.set(key, (seen.get(key) || 0) + 1);
+  });
+  st.notes.forEach(n => {
+    if (playing && passed(n)) return;                  // 试听：过了判定时间就消失
+    if (n.type === 'drum') { drawDrum(n); return; }
+    if (n.row >= 0) drawNoteBody(n);
+  });
+  st.notes.forEach(n => {
+    if (playing && passed(n)) return;
+    if (n.type === 'drum' || n.row < 0) return;
+    if (seen.get(n.b.toFixed(3)) > 1) drawChordRing(n);
+  });
+}
+
+/* 这一颗是不是已经彻底走过判定线（hold 要连尾巴一起过完才算走完） */
+function passed(n) { return n.b + (n.type === 'hold' ? n.d : 0) < st.head; }
+
+function drawNoteBody(n) {
+  const x = playX(xOfBeat(n.b)), y = rowY(n.row), r = L.noteR;
+  if (n.type === 'hold') drawHoldBand(n, x, y, ROWS[n.row].color);
+  ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2);
+  ctx.fillStyle = ROWS[n.row].color;
+  ctx.globalAlpha = n.type === 'hold' ? .95 : .85;
+  ctx.fill();
+  ctx.globalAlpha = 1;
+  ctx.lineWidth = 2; ctx.strokeStyle = '#0b1519'; ctx.stroke();
+  drawNoteLabel(x, y, n.letter);
+  if (badNotes.has(n)) drawBadRing(x, y);         // 校验不顺 → 红框
+  if (st.sel === n) drawSelectRing(x, y);
+  if (justFlashed(n)) drawFlashRing(x, y);        // 试听时播放头扫过 → 闪一下
+}
+
+/* 校验不顺的 note 套一圈红框 + 右上角一个小红三角警告牌。
+   刻意跟另外两种圈区分开：选中 = 白色虚线，双押 = 金色，违规 = 红色实线。 */
+function drawBadRing(x, y) {
+  const r = L.noteR + 8;
+  ctx.strokeStyle = '#ff5a6a'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.stroke();
+  ctx.fillStyle = '#ff5a6a';
+  ctx.beginPath();
+  ctx.moveTo(x + r - 9, y - r - 1); ctx.lineTo(x + r + 2, y - r - 1); ctx.lineTo(x + r - 3, y - r + 9);
+  ctx.closePath(); ctx.fill();
+}
+
+/* 刚被播放头扫过（240ms 内） */
+function justFlashed(n) { return n.flashAt && performance.now() - n.flashAt < 240; }
+
+function drawFlashRing(x, y) {
+  ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.arc(x, y, L.noteR + 12, 0, Math.PI * 2); ctx.stroke();
+}
+
+/* hold 的尾条：头到尾端点一条带子，尾端套个空心圈，看得出"到这儿松手" */
+function drawHoldBand(n, x, y, color) {
+  const x1 = xOfBeat(n.b + n.d), h = L.noteR * 1.15;
+  ctx.fillStyle = 'rgba(255,255,255,.10)';
+  ctx.fillRect(x, y - h, x1 - x, h * 2);
+  ctx.strokeStyle = color; ctx.lineWidth = 1.5;
+  ctx.strokeRect(x, y - h, x1 - x, h * 2);
+  ctx.beginPath(); ctx.arc(x1, y, L.noteR * .8, 0, Math.PI * 2); ctx.stroke();
+}
+
+function drawNoteLabel(x, y, letter) {
+  ctx.fillStyle = '#0b1519';
+  ctx.font = '700 15px Consolas, monospace';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(letter.toUpperCase(), x, y + 1);
+}
+
+function drawSelectRing(x, y) {
+  ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 2;
+  ctx.setLineDash([4, 3]);
+  ctx.beginPath(); ctx.arc(x, y, L.noteR + 5, 0, Math.PI * 2); ctx.stroke();
+  ctx.setLineDash([]);
+}
+
+function drawChordRing(n) {
+  const x = playX(xOfBeat(n.b)), y = rowY(n.row);
+  ctx.strokeStyle = '#ffd166'; ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.arc(x, y, L.noteR + 8, 0, Math.PI * 2); ctx.stroke();
+}
+
+/* 鼓点：横跨三轨的一条横条，画在顶部单独一行，不参与打字流 */
+function drawDrum(n) {
+  const x = playX(xOfBeat(n.b)), cy = L.drumH / 2, w = L.drumW, h = 18;
+  ctx.fillStyle = st.sel === n ? '#ffe9a8' : '#f2c14e';
+  ctx.fillRect(x - w / 2, cy - h / 2, w, h);
+  if (justFlashed(n)) {                            // 扫过时的白框闪一下
+    ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 3;
+    ctx.strokeRect(x - w / 2 - 3, cy - h / 2 - 3, w + 6, h + 6);
+  }
+  ctx.fillStyle = '#0b1519';
+  ctx.font = '700 11px Consolas, monospace';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText('SP', x, cy + 1);
+}
+
+function drawPlayhead(H) {
+  if (playing) return;                 // 试听中由判定线兼任，别画两条线
+  const x = Math.round(xOfBeat(st.head)) + .5;
+  const bad = performance.now() - rejectAt < 260;
+  ctx.strokeStyle = bad ? '#ff5a6a' : '#ffffff';
+  ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
+  ctx.fillStyle = ctx.strokeStyle;
+  ctx.beginPath();
+  ctx.moveTo(x - 5, 0); ctx.lineTo(x + 5, 0); ctx.lineTo(x, 7); ctx.closePath(); ctx.fill();
+}
+
+/* 播放头别跑出可视区：它靠近右边界就把视野往右挪一屏的 60% */
+function follow() {
+  const x = xOfBeat(st.head);
+  if (x > W * .8) st.viewBeat = st.head - W * .5 / st.pxPerBeat;
+  else if (x < 0) st.viewBeat = Math.max(0, st.head - W * .2 / st.pxPerBeat);
+}
+
+/* =====================================================================
+   ⑦b 试听：播放头由音频时间反推，绝不按帧数累加
+   --------------------------------------------------------------------
+   跟游戏本体同一条铁律：位置只能由"现在是第几秒"算出来。
+   所以这里不写 head += 每帧多少拍 —— 掉帧、卡顿、标签页切后台都不会让播放头漂走。
+
+   第二条铁律：**只在音频时钟可信的时候才信它**。
+   seek 是异步的，落地前 au.currentTime 可能还是旧值（甚至 readyState=0 时读作 0），
+   拿它反推就会把播放头一把拽回开头 —— 从头起播时正好也是 0，所以这种偏移一直没暴露，
+   只有"从中段起播"才看得见。于是起播流程改成：等元数据 → 等 seek 落地 → 落哪算哪。
+   ===================================================================== */
+const au = el('au');
+const JUDGE_X = 150;             // 试听时判定线钉在这个像素位置，谱面从右往左滚
+let playing = false, rafId = 0, actx = null;
+let flashed = new Set();        // 这一轮播放里已经"敲过"的 note
+let lastBeat = -1;              // 节拍器记着上一次是第几拍，变了才咔哒一下
+let playToken = 0;              // 起播令牌：只有最新那次起播请求能把状态切成"播放中"
+
+function headFromAudio() { return Math.max(0, (au.currentTime - st.offset) / spb()); }
+
+/* 音频时钟现在可信吗：得有数据、且没在 seek 途中 */
+function audioClockReady() { return au.readyState >= 2 && !au.seeking; }
+
+/* 音频加载失败（路径写错/文件没了）时 loadedmetadata 永远不来，
+   光靠它就会"点了试听什么反应都没有"，所以这里单独报一声。 */
+au.addEventListener('error', () => {
+  toast('音频加载失败：' + songOf(st.song).file);
+  playing = false; syncPlayUI();
+});
+
+function togglePlay() { playing ? stopPlay() : startPlay(); }
+
+/* 把音频挪到 target 秒，落地后回调。
+   ① 没元数据就先等 —— 否则 currentTime 赋值只是"默认起播点"，loop() 此刻读它得到 0；
+   ② 落点太快（差不到 2ms）就直接过，因为这种情况下浏览器不派 seeked；
+   ③ 超时兜底：个别情况下 seeked 不派发，不能把起播卡死。 */
+function seekAudio(target, done) {
+  const land = () => {
+    let timer = 0, settled = false;
+    const fin = () => {
+      if (settled) return;
+      settled = true; clearTimeout(timer);
+      au.removeEventListener('seeked', fin);
+      done();
+    };
+    if (Math.abs(au.currentTime - target) < .002) { fin(); return; }
+    au.addEventListener('seeked', fin);
+    try { au.currentTime = target; } catch (e) { fin(); return; }
+    timer = setTimeout(fin, 500);
+  };
+  if (au.readyState >= 1) land();
+  else au.addEventListener('loadedmetadata', land, { once: true });
+}
+
+/* 用音频的真实落点对齐播放头。方向很重要：**谱面去对齐音频**，不是反过来。
+   MP3 只能落在帧边界上（约 26ms），硬假设 seek 精准就是在攒误差。 */
+function alignToAudio() {
+  st.head = clampBeat(headFromAudio());
+  flashed = new Set(st.notes.filter(n => n.b <= st.head));
+  lastBeat = Math.floor(st.head);
+  refresh();
+}
+
+function startPlay() {
+  if (!au.src) au.src = songOf(st.song).file;
+  if (actx && actx.state === 'suspended') actx.resume();   // 浏览器可能把它挂起
+  const token = ++playToken;
+  seekAudio(secOf(st.head), () => {
+    if (token !== playToken) return;        // 等待期间又按了一次 → 这次作废
+    alignToAudio();                         // 落哪算哪，顺带按新位置重算"已敲过"
+    au.play().then(() => {
+      if (token !== playToken) { au.pause(); return; }
+      playing = true;
+      syncPlayUI();
+      loop();
+    }).catch(e => {
+      // 连按/长按空格会让上一个 play() 请求被打断，这是常态，不该弹错误吓人
+      if (e.name !== 'AbortError') toast('放不了音频：' + songOf(st.song).file);
+    });
+  });
+}
+
+function stopPlay() {
+  playToken++;                 // 作废还在路上那次起播，否则它会把 playing 又点亮
+  au.pause();
+  playing = false;
+  cancelAnimationFrame(rafId);
+  syncPlayUI();
+  draw();
+}
+
+function loop() {
+  if (!playing) return;
+  // seek 途中别读 au.currentTime：那会儿它可能还是旧值，会把播放头拽回去
+  if (audioClockReady()) st.head = clampBeat(headFromAudio());
+  passNotes();
+  metronome();
+  draw();                     // 视野在 draw() 里按"判定线钉死"算，不走 follow()
+  drawReadout();
+  rafId = requestAnimationFrame(loop);
+}
+
+/* 播放头扫过的 note：闪一下 + 敲一声（每颗只在第一次经过时触发） */
+function passNotes() {
+  const wall = performance.now();
+  st.notes.forEach(n => {
+    if (flashed.has(n) || n.b > st.head) return;
+    flashed.add(n);
+    n.flashAt = wall;
+    if (st.sfx) blip(n.type === 'drum' ? 320 : n.type === 'hold' ? 620 : 880, .05, volOf(tuneVol.sfx));
+  });
+}
+
+/* 试听的两个音量。它们是"这台机器上的听感偏好"，不是谱面的一部分，
+   所以**不进 st / save()**，单独存 localStorage 的 TUNE_KEY */
+const TUNE_KEY = 'kbdash.editor.tune.v1';
+let tuneVol = { metro: 20, sfx: 20 };        // 20 → 0.05，就是之前写死的那个音量
+function volOf(pct) { return Math.max(0, Math.min(100, pct || 0)) / 100 * 0.25; }
+function loadTune() {
+  try { const o = JSON.parse(localStorage.getItem(TUNE_KEY)); if (o) Object.assign(tuneVol, o); }
+  catch (e) { /* 读不出来就用默认值 */ }
+}
+function saveTune() {
+  try { localStorage.setItem(TUNE_KEY, JSON.stringify(tuneVol)); } catch (e) { /* 存不下就算了 */ }
+}
+
+/* 节拍器：整拍一变就响，每 4 拍换高音当小节重音 */
+function metronome() {
+  const b = Math.floor(st.head);
+  if (b === lastBeat) return;
+  lastBeat = b;
+  if (st.metro) blip(b % 4 === 0 ? 1600 : 1100, .03, volOf(tuneVol.metro));
+}
+
+/* 一声短音：没有音效素材，就用 WebAudio 现合成一个方波"啪" */
+function blip(freq, dur, vol) {
+  if (!actx) actx = new (window.AudioContext || window.webkitAudioContext)();
+  const t0 = actx.currentTime;
+  const o = actx.createOscillator(), g = actx.createGain();
+  o.type = 'square';
+  o.frequency.setValueAtTime(freq, t0);
+  g.gain.setValueAtTime(vol, t0);
+  g.gain.exponentialRampToValueAtTime(.0001, t0 + dur);
+  o.connect(g); g.connect(actx.destination);
+  o.start(t0); o.stop(t0 + dur + .02);
+}
+
+/* 挪播放头：播放中也允许，跳完按新位置继续。
+   跳回去时把"已经敲过"的集合重算，否则回头再放一次就不会响、也不会闪。
+   播放中这里**不读** au.currentTime —— seek 还没落地，读到的会把它拽回原处；
+   交给 seekAudio 慢慢落，落完 loop() 自然接上。 */
+function seekTo(beat) {
+  st.head = clampBeat(beat);
+  flashed = new Set(st.notes.filter(n => n.b <= st.head));
+  lastBeat = Math.floor(st.head);
+  if (playing) seekAudio(secOf(st.head), () => {});
+  refresh();
+}
+
+/* =====================================================================
+   ⑧ 面板刷新 / 提示
+   ===================================================================== */
+/* 校验每次刷新都重算：排谱时手一直在动，标红必须跟着动。
+   必须在 draw() 之前算好，否则这一帧的红框会晚一拍才出现。 */
+function relint() {
+  const iss = audit();
+  badNotes = new Set();
+  iss.forEach(v => v.notes.forEach(n => badNotes.add(n)));
+  return iss;
+}
+
+function refresh() {
+  units = parseUnits(st.text);
+  const iss = relint();
+  drawStream();
+  draw();
+  drawReadout();
+  drawIssues(iss);
+  el('zoomVal').textContent = st.pxPerBeat;
+  syncOffsetUI();
+  syncTrimUI();
+  el('bpm').value = st.bpm;
+  el('snap').value = String(st.snap);
+  el('btnDrum').style.borderColor = st.drumMode ? '#f2c14e' : '';
+  syncDiffTabs();
+  syncPlayUI();
+  syncLyricUI();
+  document.title = 'Keyboard Dash · ' + songOf(st.song).title + ' / ' +
+                   st.diff.toUpperCase() + (st.dirty ? ' *' : '');
+}
+
+/* 试听三件套的按钮状态：播放中显示"暂停"，两个开关亮青边表示开 */
+function syncPlayUI() {
+  const b = el('btnPlay');
+  b.textContent = playing ? '暂停 ⏸' : '试听 ▶';
+  b.classList.toggle('on', playing);
+  el('btnMetro').classList.toggle('on', st.metro);
+  el('btnSfx').classList.toggle('on', st.sfx);
+  el('metroVol').value = tuneVol.metro;
+  el('sfxVol').value = tuneVol.sfx;
+}
+
+/* 档位标签：当前档高亮，排过 note 的档后面加个金点 */
+function syncDiffTabs() {
+  document.querySelectorAll('.dtab').forEach(b => {
+    b.classList.toggle('on', b.dataset.d === st.diff);
+    b.classList.toggle('filled', diffCount(b.dataset.d) > 0);
+  });
+}
+
+/* 字符流面板 = 提示器，不是关卡：
+   亮黄那一格是"按原文顺序下一个还该打的字"，仅供对进度用。
+   敲别的字照样落谱，所以这里的 `.cur` 只是建议，不代表"必须敲这个"。 */
+function drawStream() {
+  const box = el('stream'), cur = hintUnit();
+  box.innerHTML = '';
+  units.forEach((u, i) => {
+    const d = document.createElement('span');
+    const taken = st.marks.includes(i), hasNote = st.notes.some(n => n.u === i);
+    const nl = u.kind === 'gap' && u.text === '⏎';
+    d.className = 'u' + (hasNote ? ' done' : taken ? ' off' : '') +
+                  (u.kind === 'double' ? ' dbl' : '') + (nl ? ' nl' : '') + (i === cur ? ' cur' : '');
+    d.textContent = u.kind === 'gap' ? (u.text === ' ' ? '·' : u.text) : u.text;
+    box.appendChild(d);
+    if (!nl) return;
+    const br = document.createElement('span');      // 原文的换行：让下一格另起一行
+    br.className = 'brk';
+    box.appendChild(br);
+  });
+  const done = st.notes.filter(n => n.u >= 0).length;
+  el('prog').textContent = done + ' / ' + units.length +
+    (cur >= 0 ? ' · 下一个：' + units[cur].text : ' · 原文已排完（照常可继续敲）');
+  el('progFill').style.width = (units.length ? (done / units.length * 100).toFixed(1) : 0) + '%';
+  followCur(box);
+}
+
+/* 让当前那一格留在视野里 —— 长原文排到后面，光标会滚出这个 224px 高的框。
+   只动 #stream 自己的 scrollTop：用 scrollIntoView 会连带把整个侧栏也滚走 */
+function followCur(box) {
+  const c = box.querySelector('.u.cur');
+  if (!c) return;
+  const top = c.offsetTop, bot = top + c.offsetHeight;
+  if (top < box.scrollTop) box.scrollTop = Math.max(0, top - 6);
+  else if (bot > box.scrollTop + box.clientHeight) box.scrollTop = bot - box.clientHeight + 6;
+}
+
+/* 原文框：改了没点应用就把边框染黄，顺手报字数和音节数 */
+function syncLyricUI() {
+  const t = el('lyric'), v = t.value, dirty = v !== st.text;
+  t.classList.toggle('dirty', dirty);
+  el('lyricMeta').textContent = v.length + ' 字符 · ' + parseUnits(v).length + ' 音节' +
+                                (dirty ? ' · 未应用' : '');
+}
+
+function drawReadout() {
+  const done = st.notes.filter(n => n.u >= 0).length;
+  const sec = s => s.toFixed(3) + 's';
+  let line = '播放头 ' + st.head.toFixed(3) + ' 拍 = ' + sec(secOf(st.head)) +
+             ' · 每拍 ' + (spb() * 1000).toFixed(1) + 'ms · 已排 ' + done + '/' + units.length +
+             ' · notes ' + st.notes.length + ' · 末颗 ' + endBeat() + ' 拍 = ' + sec(secOf(endBeat()));
+  if (st.sel) {
+    const n = st.sel;
+    line += ' · 选中 ' + (n.type === 'drum' ? '鼓点' : n.letter) + ' @' + n.b + ' 拍 = ' + sec(secOf(n.b)) +
+            (n.type === 'hold' ? '，长 ' + n.d + ' 拍' : '');
+  }
+  el('readout').textContent = line;
+}
+
+let toastTimer = 0;
+function toast(msg) {
+  const t = el('toast');
+  t.textContent = msg;
+  t.classList.add('on');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.remove('on'), 1400);
+}
+
+/* =====================================================================
+   ⑧b 校验：只报告，不动手改谱
+   --------------------------------------------------------------------
+   游戏本体 auditChart() 里那条"太密"（间隔 < max(90ms, 一拍/3)）已经删了：
+   数错阈值，硬套在 1/8 网格上会把正常谱子报成一片红。既然游戏不再拦，
+   编辑器也不该再拦 —— 这里只剩两条**按得下去 / 按不下去**的硬规则。
+   怎么让开仍是做谱的人的判断，所以只有红框和清单，没有"自动修"。
+   ===================================================================== */
+const LINT = { sameTimeMax: 2 };   // 同一拍最多几键（游戏只配双押）
+
+/* 违例清单。鼓点用空格、走另一只手，不参与打字流的连打判定。 */
+function audit() {
+  const tap = st.notes.filter(n => n.row >= 0).sort((a, b) => a.b - b.b);
+  return [].concat(lintHoldClash(tap), lintTooManyAtOnce(tap));
+}
+
+/* ① hold 尾巴撞车：有 note 掉在还没松手的区间里，那颗根本按不下去 */
+function lintHoldClash(tap) {
+  const out = [];
+  tap.forEach(h => {
+    if (h.type !== 'hold') return;
+    const hit = tap.filter(n => n !== h && n.b > h.b + 1e-6 && n.b < h.b + h.d - 1e-6);
+    if (hit.length) out.push({ notes: [h].concat(hit), msg: '按住期间还压着 ' + hit.length + ' 颗' });
+  });
+  return out;
+}
+
+/* ② 同一拍超过 2 键：游戏只认双押 —— groupChords 会把第 3 颗配到歪掉的组里 */
+function lintTooManyAtOnce(tap) {
+  const out = [], seen = new Map();
+  tap.forEach(n => {
+    const k = n.b.toFixed(3);
+    if (!seen.has(k)) seen.set(k, []);
+    seen.get(k).push(n);
+  });
+  seen.forEach(g => {
+    if (g.length > LINT.sameTimeMax) out.push({ notes: g, msg: '这一拍有 ' + g.length + ' 键，最多 2 键' });
+  });
+  return out;
+}
+
+/* 清单：点一条就跳过去并选中，省得自己翻。条目按出问题的拍排序。 */
+function drawIssues(list) {
+  const box = el('issues');
+  el('issueCount').textContent = list.length ? list.length + ' 处 · 点条目跳过去' : '';
+  if (!list.length) { box.innerHTML = '<div class="none">没问题 ✓</div>'; return; }
+  list.sort((a, b) => a.notes[0].b - b.notes[0].b);
+  box.innerHTML = list.map((v, i) =>
+    '<div class="it" data-i="' + i + '" title="点一下跳过去">第 ' +
+    (+v.notes[0].b.toFixed(2)) + ' 拍 · ' + v.msg + '</div>').join('');
+  box.querySelectorAll('.it').forEach(d => {
+    d.onclick = () => { const n = list[+d.dataset.i].notes[0]; st.sel = n; seekTo(n.b); };
+  });
+}
+
+/* =====================================================================
+   ⑨ 契约导出
+   ===================================================================== */
+/* 一串 note 从"拍"翻成契约里的"秒"（导出、片段、条目三处共用这一个换算）
+   **必须幂等**：toCode 送进来的是 fullLevel 已经换算过的那份（只有 t、没有 b），
+   再拿 n.b 去算一遍会得到 secOf(undefined) = NaN —— 整份谱面的时间戳全成 NaN，
+   导出去的码在别人机器上就是"所有 note 堆在同一个点上"。
+   契约格式 → 契约格式应当是恒等变换，所以这里先认出它原样返回。
+
+   **t 是音频秒，不是关卡秒** —— 别自作主张减 startAt：
+   游戏那边 manualChart() 自己会减（`t = e.t*1000 - startAt*1000`），
+   减两次就会整份提前一个 offset。（2126 行那句注释容易看成要减，看 manualChart 才确认不用。） */
+function contractNotes(list) {
+  return list.slice().sort(byTime).map(contractNote);
+}
+/* 排序键：内部谱按拍、契约谱按秒，两种都得排得对 */
+function byTime(a, b) { return timeKey(a) - timeKey(b); }
+function timeKey(n) { return n.b === undefined ? n.t : n.b; }
+function contractNote(n) {
+  if (n.b === undefined && n.t !== undefined) {          // 已经是契约格式，原样返回
+    return Object.assign({ t: n.t, letter: n.letter, type: n.type },
+                         n.type === 'hold' ? { dur: n.dur } : null);
+  }
+  const o = { t: +(secOf(n.b).toFixed(3)), letter: n.letter, type: n.type };
+  if (n.type === 'hold') o.dur = +(n.d * spb()).toFixed(3);
+  return o;
+}
+
+/* ---------- 裁剪窗口 ----------
+   关卡只占音频的 [from, to] 这一段，单位是**音频秒**：
+   · from = 关卡从音频第几秒起播（导出成关卡的 startAt），没填就用 st.offset（= 第 0 拍所在那一秒）；
+   · to   = 关卡在第几秒结束，没填就到音频末尾。
+   窗口外的 note 导出时丢掉（它们落在被裁掉的那截里，游戏里也听不见）。
+   音频文件本身不动 —— 游戏是从 from 起播、跑满 duration 就收尾，不需要真的截一个文件。 */
+function winFrom() { return st.trimFrom > 0 ? st.trimFrom : st.offset; }
+function winTo() { return st.trimTo > 0 ? st.trimTo : Infinity; }
+function audioLen() { return isFinite(au.duration) && au.duration > 0 ? au.duration : 0; }
+
+/* 关卡时长（毫秒，关卡时间轴）。终点没裁、又量不出音频长度时才给 0（= 让游戏自己量） */
+function winDurMs() {
+  const from = winFrom(), to = winTo();
+  const end = to === Infinity ? (audioLen() || 0) : to;
+  return end > from ? Math.round((end - from) * 1000) : 0;
+}
+
+/* 一档的谱 → 导出用：换算 + 裁掉窗口外的。三档共用，免得哪条出口漏了裁。
+   这里比的是音频秒（t 就是音频秒），跟 startAt 无关。 */
+function exportNotes(list) {
+  const from = winFrom(), to = winTo();
+  return contractNotes(list).filter(n =>
+    n.t >= from - 1e-6 && (to === Infinity || n.t + (n.dur || 0) <= to + 1e-6));
+}
+
+function toContract() {
+  return {
+    song: songOf(st.song).title,
+    bpm: st.bpm,
+    offset: +(st.offset.toFixed(3)),
+    difficulty: st.diff,
+    notes: contractNotes(st.notes),
+  };
+}
+
+/* 「复制 notes 片段」：只有当前档的 notes 数组，粘进已有的关卡条目里 */
+function levelSnippet() {
+  const head = '/* ' + songOf(st.song).title + ' · ' + st.diff + ' · bpm ' + st.bpm +
+               ' · offset ' + st.offset.toFixed(3) + 's（editor.html 导出） */\n    notes: [';
+  return head + '\n' + notesLines(exportNotes(st.notes)).join('\n') + '\n    ],';
+}
+
+/* 「导出完整关卡条目」：连 id / 曲名 / 音频 / bpm / startAt 一起生成，
+   而且把**排过 note 的每一档**都塞进 charts —— 粘进 LEVELS 就是一整条。 */
+function levelEntrySnippet() {
+  return entryHead() + '\n' + chartsBlock().join('\n') + '\n  },';
+}
+
+/* charts 那一段：三档各一份独立谱，只输出真正排过 note 的档
+   —— 游戏那边靠"哪些档存在"决定显示哪几个难度按钮，空的档不能写进去。 */
+function chartsBlock() {
+  const out = ['    charts: {'];
+  DIFFS.forEach(k => {
+    const list = exportNotes(notesOfDiff(k));   // 跟推送/关卡码走同一个窗口，别这边漏裁
+    if (!list.length) return;
+    out.push('      ' + k + ': {');
+    out.push('        notes: [');
+    notesLines(list).forEach(l => out.push('    ' + l));
+    out.push('        ],');
+    out.push('      },');
+  });
+  out.push('    },');
+  return out;
+}
+
+/* 条目的上半截：全部来自 SONGS，跟 index.html 的 LEVELS 一一对应 —— 这就是同步纪律的落点 */
+function entryHead() {
+  const s = songOf(st.song);
+  const dur = winDurMs();
+  return [
+    '  {',
+    '    id: ' + s.levelId + ',    // ← 别和别的关卡撞：教程关已经是 0',
+    "    title: '" + s.title + "',",
+    "    titleEn: '" + s.title + "',",
+    "    audio: '" + s.file + "',",
+    '    synth: false,',
+    '    bpm: ' + st.bpm + ',',
+    '    startAt: ' + winFrom().toFixed(3) + ',  // ← 关卡从音频这一秒起播（裁剪起点）',
+    '    duration: ' + dur + ',   // ' + (dur ? '关卡时长（毫秒）：到裁剪终点为止' : '0 = 自动读音频时长'),
+    '    text: null,                // 手工谱不进歌词条，必须写 null',
+    "    sections: [{ name: '主歌', from: 0, to: 999, doubles: false }],",
+    '    tweak: {},',
+  ].join('\n');
+}
+
+/* notes 那几行，缩进按"塞进关卡对象里"排好，粘过去一个字都不用改 */
+function notesLines(list) {
+  return contractNotes(list).map(n => {
+    let s = "      { t: " + n.t + ", letter: '" + n.letter + "', type: '" + n.type + "'";
+    if (n.dur !== undefined) s += ', dur: ' + n.dur;
+    return s + ' },';
+  });
+}
+
+/* 契约反过来：秒 → 拍，改 BPM / offset 后旧谱也能还原到同一套拍号上 */
+function fromContract(c) {
+  st.bpm = c.bpm || 120;
+  st.offset = c.offset || 0;
+  st.notes = (c.notes || []).map(e => ({
+    b: clampBeat((e.t - st.offset) / (60 / st.bpm)),
+    type: e.type || 'single',
+    letter: (e.letter || ' ').toLowerCase(),
+    row: e.type === 'drum' ? -1 : LETTER_ROW[(e.letter || 'a').toLowerCase()],
+    d: e.dur ? e.dur / (60 / st.bpm) : 0,
+    u: -1,
+  }));
+  st.marks = [];
+}
+
+/* ---------- 导入：文件选择器 + FileReader ----------
+   读本地文件只能用 FileReader（file:// 下 fetch 会被浏览器拦掉）；
+   选文件是用户主动动作，不算偷偷读本地文件。 */
+function importFile(file) {
+  if (!file) return;
+  const rd = new FileReader();
+  rd.onload = () => applyContract(rd.result);
+  rd.onerror = () => toast('读不了这个文件');
+  rd.readAsText(file);
+}
+
+/* 把契约文本装回编辑器。曲名对得上就先切到那首歌，再按文件里的难度归位 */
+function applyContract(text) {
+  let c;
+  try { c = JSON.parse(text); } catch (e) { toast('导入失败：不是合法的 JSON'); return; }
+  const hit = allSongs().find(s => s.title === c.song);
+  if (hit && hit.id !== st.song) selectSong(hit.id);
+  const key = DIFFS.includes(c.difficulty) ? c.difficulty : st.diff;
+  if (key !== st.diff) switchDiff(key);
+  pushUndo();                                  // 导入也算一步操作，Ctrl+Z 能整份撤掉
+  fromContract(c);
+  relinkUnits();
+  st.head = 0; st.viewBeat = -1; st.sel = null; st.dirty = true;
+  refresh();
+  resize();
+  toast('已导入 ' + (st.notes.length) + ' 颗 → ' + st.diff.toUpperCase() +
+        (hit ? '' : '（曲名不认识，按当前曲目导入）'));
+}
+
+/* 导入来的 note 不带字符槽编号（u = -1），这里按"字母对得上"把它们挂回原文：
+   从最早那颗开始，给它找后面第一个还没被占、首字母相同的单元。
+   挂上之后字符流才有意义：进度条、下一次该打哪个字都跟着对。 */
+function relinkUnits() {
+  units = parseUnits(st.text);
+  st.marks = [];
+  st.notes.slice().sort((a, b) => a.b - b.b).forEach(n => {
+    n.u = -1;
+    if (n.type === 'drum') return;
+    for (let i = 0; i < units.length; i++) {
+      const u = units[i];
+      if (unitTaken(i) || u.kind === 'gap' || u.text[0] !== n.letter) continue;
+      n.u = i;
+      break;
+    }
+  });
+}
+
+/* ---------- 存 / 读 localStorage ---------- */
+function storeKey(songId) { return STORE_PREFIX + songId; }
+
+function save() {
+  st.diffs[st.diff] = { notes: st.notes, marks: st.marks, head: st.head };
+  localStorage.setItem(storeKey(st.song), JSON.stringify({
+    bpm: st.bpm, offset: st.offset, snap: st.snap, text: st.text,
+    viewBeat: st.viewBeat, diff: st.diff, diffs: st.diffs,   // 三档的谱全在这一个键里
+    trimFrom: st.trimFrom || 0, trimTo: st.trimTo || 0,
+    // 音频来路也存，但**绝不存 blob**：它跨会话必失效，存了就是下次开不了局的祸根。
+    src: st.src && !st.src.startsWith('blob:') ? st.src : '',
+    file: st.file || '', audioName: st.audioName || '',
+  }));
+  st.dirty = false;
+  toast('已保存 ✓（三档一起存）');
+  refresh();
+}
+
+function loadSaved(song) {
+  const raw = localStorage.getItem(storeKey(song.id));
+  if (!raw) return false;
+  const o = JSON.parse(raw);
+  st = blankState(song);
+  st.text = o.text !== undefined ? o.text : song.text;
+  st.bpm = o.bpm || song.bpm;
+  st.offset = o.offset || 0;
+  st.snap = o.snap || 1;
+  st.viewBeat = o.viewBeat !== undefined ? o.viewBeat : -1;
+  st.diffs = o.diffs || {};
+  st.diff = DIFFS.includes(o.diff) ? o.diff : 'normal';
+  // 读回来的地址先过一遍 usableSrc：历史存档里可能躺着上一轮存进去的失效 blob，
+  // 信了它就整首歌放不出声。过滤掉之后自然回退到 file（相对路径）。
+  st.src = usableSrc(o.src) || usableSrc(song.src) || '';
+  st.file = o.file || song.file || '';
+  st.audioName = o.audioName || '';
+  st.trimFrom = +o.trimFrom || 0;
+  st.trimTo = +o.trimTo || 0;
+  const cur = st.diffs[st.diff];
+  st.notes = cur ? cur.notes : [];
+  st.marks = cur ? cur.marks : [];
+  st.head = cur ? cur.head : 0;
+  undoStack = [];
+  return true;
+}
+
+function songOf(id) { const a = allSongs(); return a.find(s => s.id === id) || a[0]; }
+
+/* =====================================================================
+   ⑩ 交互：键盘
+   ===================================================================== */
+function typingTarget(t) {
+  return t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT');
+}
+
+document.addEventListener('keydown', e => {
+  if (typingTarget(e.target)) return;
+  const k = e.key;
+  if (k === 'Escape' && !el('overlay').hidden) { closeOverlay(); return; }
+  if (e.ctrlKey && (k === 's' || k === 'S')) { e.preventDefault(); save(); return; }
+  if (e.ctrlKey && (k === 'z' || k === 'Z')) { e.preventDefault(); popUndo('Ctrl+Z'); return; }
+  if (e.ctrlKey && e.shiftKey && (k === 'ArrowLeft' || k === 'ArrowRight')) {
+    e.preventDefault();
+    rollChart(k === 'ArrowRight' ? 1 : -1);
+    return;
+  }
+  if (e.ctrlKey && (k === 'ArrowLeft' || k === 'ArrowRight')) {
+    e.preventDefault();
+    step(k === 'ArrowRight' ? 1 : -1, true);
+    return;
+  }
+  if (k === 'ArrowLeft') { e.preventDefault(); step(-1, false); return; }
+  if (k === 'Backspace') { e.preventDefault(); popUndo('Backspace'); return; }
+  if (k === 'ArrowRight') { e.preventDefault(); step(1, false); return; }  if (k === 'Tab') { e.preventDefault(); toggleHold(st.sel); return; }
+  if (k === 'Escape') { st.sel = null; refresh(); return; }
+  // e.repeat：长按空格会被操作系统自动重复，不挡住就是"播放/暂停/播放/暂停"疯狂横跳，
+  // 每个被打断的 play() 还都会去改一次 currentTime —— 这正是"有时偏移"的触发路径之一。
+  if (k === ' ') { e.preventDefault(); if (!e.repeat) togglePlay(); return; }
+  // 注意：这里**不能**给 B 绑快捷键 —— 打字铺谱要能敲出字母 b，
+  // 鼓点模式只留按钮（右上角「鼓点模式」）。
+  // 字母键：敲什么都落谱，不再对照原文拦截。字符流面板只是"下一个该打谁"的提示，
+  // 想跳字就跳、想补一颗就补 —— 补的那颗按不了"原文顺序"，但谱面本身完全合法。
+  if (/^[a-zA-Z]$/.test(k)) {
+    const n = placeLetter(k);               // 轨道外的键（数字、符号）它自己就拒了，返回 null
+    if (n) refresh();
+    return;
+  }
+});
+
+/* ←/→：普通按吸附步进，Ctrl 整拍跳。
+   → 额外负责"跨空拍槽"：下一个单元是空格/标点时把它记成已处理（躺平变暗）。 */
+function step(dir, whole) {
+  const d = whole ? 1 : st.snap;
+  st.head = clampBeat(Math.max(0, st.head + dir * d));
+  if (dir > 0) {
+    const i = cursorUnit();
+    if (i >= 0 && units[i].kind === 'gap' && !st.marks.includes(i)) {
+      pushUndo();
+      st.marks.push(i);
+      st.dirty = true;
+    }
+  } else {
+    const last = st.marks[st.marks.length - 1];
+    if (last !== undefined) { pushUndo(); st.marks.pop(); st.dirty = true; }
+  }
+  follow();
+  refresh();
+}
+
+function setDrumMode(on) {
+  st.drumMode = on;
+  toast('鼓点模式 ' + (on ? '开：点击时间轴上方一行放置' : '关'));
+  refresh();
+}
+
+/* =====================================================================
+   ⑪ 交互：鼠标（点选 / 拖动 / 拖尾 / 右键删）
+   ===================================================================== */
+function hitTest(x, y) {
+  for (let i = st.notes.length - 1; i >= 0; i--) {
+    const n = st.notes[i];
+    if (n.type === 'drum') {
+      if (y <= L.drumH && Math.abs(x - xOfBeat(n.b)) <= L.drumW / 2 + 3) return { n, zone: 'body' };
+      continue;
+    }
+    if (Math.abs(y - rowY(n.row)) > L.rowH / 2) continue;
+    const x0 = xOfBeat(n.b), x1 = xOfBeat(n.b + (n.d || 0));
+    if (x >= x0 - L.noteR - 4 && x <= x1 + L.noteR + 4) {
+      return { n, zone: (n.type === 'hold' && x > x1 - 10) ? 'tail' : 'body' };
+    }
+  }
+  return null;
+}
+
+cv.addEventListener('mousedown', e => {
+  const p = pos(e), H = canvasH();
+  if (st.drumMode && p.y <= L.drumH) {                    // 鼓点模式：点击那一行就落一个
+    pushUndo();
+    st.notes.push({ b: clampBeat(quant(beatOfX(p.x))), type: 'drum', letter: ' ', row: -1, d: 0, u: -1 });
+    st.notes.sort((a, b) => a.b - b.b);
+    st.dirty = true;
+    refresh();
+    return;
+  }
+  if (p.y >= H - L.rulerH) {                              // 底部拍号条：按住左右拖 = 刮擦
+    drag = { scrub: true };
+    seekTo(quant(beatOfX(p.x)));
+    return;
+  }
+  const hit = hitTest(p.x, p.y);
+  st.sel = hit ? hit.n : null;
+  if (hit) {
+    drag = { n: hit.n, zone: hit.zone, grab: beatOfX(p.x) - hit.n.b, moved: false, undo: false };
+  } else {
+    seekTo(quant(beatOfX(p.x)));                          // 空处点击 = 把播放头挪过去
+  }
+  refresh();
+});
+
+cv.addEventListener('mousemove', e => {
+  const p = pos(e);
+  if (drag && drag.scrub) { seekTo(quant(beatOfX(p.x))); return; }
+  if (!drag) { cv.style.cursor = hitTest(p.x, p.y) ? 'pointer' : 'default'; return; }
+  const n = drag.n;
+  if (!drag.undo) { pushUndo(); drag.undo = true; }
+  if (drag.zone === 'tail') {
+    n.d = Math.max(st.snap, quant(beatOfX(p.x) - n.b));   // 尾端拖的是时长，最短一个吸附步
+  } else {
+    n.b = clampBeat(quant(beatOfX(p.x) - drag.grab));
+  }
+  drag.moved = true;
+  st.dirty = true;
+  refresh();
+});
+
+window.addEventListener('mouseup', () => {
+  if (drag && drag.moved) st.notes.sort((a, b) => a.b - b.b);
+  drag = null;
+  refresh();
+});
+
+cv.addEventListener('contextmenu', e => {
+  e.preventDefault();
+  const hit = hitTest(pos(e).x, pos(e).y);
+  if (hit) removeNote(hit.n);
+});
+
+/* 双击 = 从那儿起播：先把播放头挪过去，再按新位置开始试听
+   （播放中双击也一样，等于"跳过去接着放"） */
+cv.addEventListener('dblclick', e => {
+  const p = pos(e);
+  if (p.y >= canvasH() - L.rulerH) return;        // 拍号条上的双击不算
+  seekTo(quant(beatOfX(p.x)));
+  if (!playing) startPlay();
+});
+
+/* 滚轮横向滚，Ctrl+滚轮缩放视野 */
+cv.addEventListener('wheel', e => {
+  e.preventDefault();
+  if (e.ctrlKey) {
+    st.pxPerBeat = Math.max(24, Math.min(320, st.pxPerBeat * (e.deltaY > 0 ? .9 : 1.1)));
+  } else {
+    st.viewBeat = Math.max(0, st.viewBeat + (e.deltaY + e.deltaX) / 60);
+  }
+  refresh();
+}, { passive: false });
+
+function pos(e) {
+  const r = cv.getBoundingClientRect();
+  return { x: e.clientX - r.left, y: e.clientY - r.top };
+}
+
+/* =====================================================================
+   ⑫ 尺寸 / UI 绑定 / 启动
+   ===================================================================== */
+function resize() {
+  const wrap = el('cvWrap'), H = canvasH();
+  W = wrap.clientWidth;
+  cv.width = Math.round(W * DPR);
+  cv.height = Math.round(H * DPR);
+  cv.style.height = H + 'px';
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  draw();
+}
+window.addEventListener('resize', resize);
+
+el('song').addEventListener('change', e => selectSong(e.target.value));
+el('bpm').addEventListener('change', e => {
+  const v = Math.max(40, Math.min(300, +e.target.value || 120));
+  pushUndo();                                    // 改 BPM 也是一步操作，能撤
+  st.bpm = v; st.dirty = true; toast('BPM ' + v + '：全谱重排'); refresh();
+});
+el('btnBpm').addEventListener('click', () => detectBpm(audioFileRef));
+el('bpmDbl').addEventListener('click', () => flipBpm(2));
+el('bpmHalf').addEventListener('click', () => flipBpm(0.5));
+el('snap').addEventListener('change', e => { st.snap = +e.target.value; refresh(); });
+el('offMinus').addEventListener('click', () => shiftOffset(-10));
+el('offPlus').addEventListener('click', () => shiftOffset(10));
+el('offNum').addEventListener('change', e => setOffsetMs(e.target.value));
+/* 滑杆：按下那一下先拍一张撤销快照，拖动途中不再拍 ——
+   一次拖动能刷出几百个 input 事件，全拍进去撤销栈就废了。
+   键盘方向键没有 pointerdown，offDrag 是 false，每按一下各拍一张，正好。 */
+let offDrag = false;
+el('offRange').addEventListener('pointerdown', () => { pushUndo(); offDrag = true; });
+el('offRange').addEventListener('pointerup', () => { offDrag = false; });
+el('offRange').addEventListener('change', () => { offDrag = false; });   // 松手在外面时的兜底
+el('offRange').addEventListener('input', e => setOffsetMs(e.target.value, offDrag));
+
+/* 裁剪：两端都留空 = 整首。改的是"关卡占音频哪一段"，note 在音频里的位置不动
+   —— 这跟上面的「整体偏移」正好相反，偏移是把整张谱相对音频滑动，用来对拍。 */
+el('trimA').addEventListener('change', e => setTrim(e.target.value, st.trimTo));
+el('trimB').addEventListener('change', e => setTrim(st.trimFrom, e.target.value));
+el('trimAHere').addEventListener('click', () => setTrim(secOf(st.head).toFixed(2), st.trimTo));
+el('trimBHere').addEventListener('click', () => setTrim(st.trimFrom, secOf(st.head).toFixed(2)));
+el('trimAll').addEventListener('click', () => setTrim(0, 0));
+function setTrim(a, b) {
+  const va = Math.max(0, +a || 0), vb = Math.max(0, +b || 0);
+  if (vb && va >= vb) { syncTrimUI(); toast('终点得在起点之后：' + va + ' → ' + vb + ' 是空的'); return; }
+  if (va === st.trimFrom && vb === st.trimTo) return;
+  pushUndo();
+  st.trimFrom = va; st.trimTo = vb;
+  st.dirty = true;
+  toast(va || vb ? '裁剪 ' + (va || '开头') + ' → ' + (vb || '结尾') + 's' : '已取消裁剪：整首');
+  refresh();
+}
+
+/* 整体偏移 = 谱面第 0 拍落在音频的第几秒（导出时就是关卡的 startAt），正 = 整谱往后挪。
+   数字框**不夹**：老工程的 offset 可能远超 ±500ms，静默夹回去等于偷偷改谱 ——
+   真想夹也得让人看见，不能替他夹。 */
+function setOffsetMs(ms, undo) {
+  const v = Number(ms);
+  // 空的/乱的：把框里的值拨回去，不动谱。（Number('') 是 0，会被当成"归零"，得单独拦）
+  if ((typeof ms === 'string' && ms.trim() === '') || !isFinite(v)) { syncOffsetUI(); return; }
+  if (undo !== true) pushUndo();
+  st.offset = +(v / 1000).toFixed(3);
+  st.dirty = true;
+  refresh();                                      // 顺手把两个控件拨到新值
+}
+/* 裁剪信息行：让人一眼看到"这段多长、裁掉了几颗"，不用到游戏里数。
+   裁掉几颗是三档合计 —— 一档一档报会把这行挤爆。 */
+function syncTrimUI() {
+  el('trimA').value = st.trimFrom ? st.trimFrom : '';
+  el('trimB').value = st.trimTo ? st.trimTo : '';
+  const len = audioLen(), from = winFrom(), to = winTo();
+  const end = to === Infinity ? (len || 0) : to;
+  let dropped = 0;
+  DIFFS.forEach(k => { dropped += notesOfDiff(k).length - exportNotes(notesOfDiff(k)).length; });
+  el('trimInfo').textContent =
+    (len ? '音频 ' + len.toFixed(1) + 's · ' : '') +
+    '关卡 ' + from.toFixed(1) + '→' + (end ? end.toFixed(1) + 's' : '末尾') +
+    (end > from ? '（' + (end - from).toFixed(1) + 's）' : '') +
+    (dropped ? ' · 裁掉 ' + dropped + ' 颗' : '');
+}
+
+function shiftOffset(d) {
+  setOffsetMs(Math.round(st.offset * 1000) + d);
+  toast('整体偏移 ' + Math.round(st.offset * 1000) + 'ms：整谱相对音频挪了 ' +
+        (d > 0 ? '+' : '−') + Math.abs(d) + 'ms');
+}
+/* 三个控件都从 st.offset 反推；滑杆量程按当前值撑开（至少 ±500ms），
+   否则 offset 本来就大于 500ms 的谱一拖就被顶在最大档动不了 */
+function syncOffsetUI() {
+  const ms = Math.round(st.offset * 1000), r = el('offRange');
+  r.min = Math.min(-500, ms); r.max = Math.max(500, ms);
+  r.value = ms;                                  // min/max 必须先改，否则会被旧量程夹住
+  el('offNum').value = ms;
+}
+el('zoomIn').addEventListener('click', () => zoom(1.2));
+el('zoomOut').addEventListener('click', () => zoom(1 / 1.2));
+function zoom(k) { st.pxPerBeat = Math.round(Math.max(24, Math.min(320, st.pxPerBeat * k))); refresh(); }
+el('btnDrum').addEventListener('click', () => setDrumMode(!st.drumMode));
+el('btnPlay').addEventListener('click', togglePlay);
+el('btnMetro').addEventListener('click', () => { st.metro = !st.metro; syncPlayUI(); });
+el('btnSfx').addEventListener('click', () => { st.sfx = !st.sfx; syncPlayUI(); });
+el('metroVol').addEventListener('input', e => setVol('metro', +e.target.value));
+el('sfxVol').addEventListener('input', e => setVol('sfx', +e.target.value));
+/* 松手时给一声示范音 —— 调音量不听一声等于盲调。
+   拖动途中不响：input 每帧都来，会连成机枪。 */
+el('metroVol').addEventListener('change', () => blip(1600, .04, volOf(tuneVol.metro)));
+el('sfxVol').addEventListener('change', () => blip(880, .05, volOf(tuneVol.sfx)));
+function setVol(k, v) {
+  tuneVol[k] = Math.max(0, Math.min(100, Math.round(v) || 0));
+  saveTune();
+  syncPlayUI();
+}
+au.addEventListener('ended', stopPlay);
+au.addEventListener('error', () => toast('读不到音频：' + songOf(st.song).file));
+document.querySelectorAll('.dtab').forEach(b => {
+  b.addEventListener('click', () => switchDiff(b.dataset.d));
+});
+el('btnSave').addEventListener('click', save);
+el('btnJson').addEventListener('click', exportJson);
+el('btnImport').addEventListener('click', () => el('fileIn').click());
+el('fileIn').addEventListener('change', e => {
+  importFile(e.target.files[0]);
+  e.target.value = '';                       // 清掉，同一个文件才能连着导第二次
+});
+el('btnSnip').addEventListener('click', copySnippet);
+el('btnEntry').addEventListener('click', copyEntry);
+el('btnPush').addEventListener('click', pushToGame);
+el('btnCode').addEventListener('click', showCode);
+el('btnRoll').addEventListener('click', () => rollChart(1));
+el('btnAudio').addEventListener('click', pickAudio);
+el('btnScan').addEventListener('click', scanSongsDir);
+el('btnSongAdd').addEventListener('click', saveAsSong);
+el('btnSongDel').addEventListener('click', openSongMgr);
+el('audioIn').addEventListener('change', e => {
+  useAudioFile(e.target.files[0]);
+  e.target.value = '';                       // 清掉，同一个文件才能连着选第二次
+});
+el('btnCloseOver').addEventListener('click', closeOverlay);
+el('overlay').addEventListener('mousedown', e => {
+  if (e.target === el('overlay')) closeOverlay();   // 点空白处也关
+});
+el('btnApply').addEventListener('click', () => {
+  st.text = el('lyric').value;
+  st.dirty = true;
+  toast('原文已应用，字符流重排');
+  refresh();
+});
+el('lyric').addEventListener('input', syncLyricUI);
+
+/* 下载 .json：Blob + <a download>，file:// 下一样能用（浏览器会存到默认下载目录，
+   文件名就是这个 —— 需要的话请手工放进项目的 charts/ 文件夹） */
+function exportJson() {
+  // 文件名带档位：三档各是一份独立谱，同名会互相覆盖
+  const base = songOf(st.song).title.replace(/[^\w一-龥-]+/g, '_') || 'chart';
+  const name = base + '_' + st.diff + '.json';
+  const blob = new Blob([JSON.stringify(toContract(), null, 2)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+  toast('已导出 ' + name + '（下载目录 → 挪进 charts/）');
+}
+
+/* 复制到剪贴板；file:// 下剪贴板可能被拒，那就降级成弹层让人手工全选复制 */
+function copyText(s, okMsg) {
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(s).then(() => toast(okMsg)).catch(() => showOverlay(s));
+    return;
+  }
+  showOverlay(s);
+}
+function copySnippet() { copyText(levelSnippet(), 'notes 片段已复制 ✓'); }
+function copyEntry() { copyText(levelEntrySnippet(), '整条关卡已复制 ✓：粘进 LEVELS 数组即可'); }
+
+/* ================= ⑩ 推送到游戏 / 关卡码 =================
+   之前实测明白的三件事决定了这里的做法：
+   · file:// 下 fetch 不了 JSON，但**同目录的两个页面 localStorage 互通**；
+   · 游戏开着的时候 storage 事件照样派发（不用刷新，实测可用）；
+   · 合成器只有节拍没有旋律 → 谱面带不走音乐，所以分享时必须附一句音频来源。 */
+const SHARE_KEY = 'kbdash.levels.v1';
+const CODE_VER  = 'KBD1';
+
+/* 某一档的谱：当前档在内存里，其余档在存档里 —— 导出三兄弟共用这一个取法 */
+function notesOfDiff(k) {
+  return k === st.diff ? st.notes : (st.diffs[k] ? st.diffs[k].notes : []);
+}
+
+/* 整个工程 → 一条完整关卡对象。字段排布照抄游戏 LEVELS 的条目：
+   游戏那边的 levelFor() 读的就是 charts[档].notes，两边格式必须一样。 */
+function fullLevel() {
+  const s = songOf(st.song);
+  const charts = {};
+  DIFFS.forEach(k => {
+    const list = exportNotes(notesOfDiff(k));
+    if (list.length) charts[k] = { notes: list };
+  });
+  return {
+    id: shareId(s), title: s.title, titleEn: s.title,
+    audio: s.file, synth: false, hint: s.hint || '',
+    bpm: st.bpm, startAt: +winFrom().toFixed(3), duration: winDurMs(),
+    text: null, custom: true,
+    sections: [{ name: '整首', from: 0, to: 999, doubles: false }],
+    tweak: {}, charts,
+  };
+}
+
+/* 共享区里的"这一首"用哪个 id —— **必须和游戏那边 customId() 一字不差**：
+   游戏是 hash(曲名|音频)，编辑器以前用的是 SONGS 里的 levelId，
+   而只有官方曲目才写了 levelId，自己加的歌全是 undefined ——
+   findIndex(x => x.id === undefined) 每次都命中第 0 条，于是**每推一首就把上一首覆盖掉**，
+   共享区里永远只剩一条。同一算法两边对上了，同曲反复推送才是覆盖、异曲才是各占一条。 */
+function shareId(s) {
+  let h = 0;
+  // 共享区里的条目字段叫 audio，曲目表里的叫 file —— 两个都认，值是一样的
+  const str = (s.title || '') + '|' + (s.audio || s.file || '');
+  for (let i = 0; i < str.length; i++) h = (h * 31 + str.charCodeAt(i)) | 0;
+  return 'c' + (h >>> 0).toString(36);
+}
+
+/* 三档各出了多少颗 —— 导出前让人看清"到底带走了哪几档"。
+   以前只有一句"已推送"，看不到档位，只能到游戏里数按钮，出问题全靠猜。 */
+function diffSummary(charts) {
+  return Object.keys(charts).map(k => k + ' ' + charts[k].notes.length).join(' / ');
+}
+
+/* note 压成短记号，几百颗也能当一段文字发出去：毫秒整数 + 单字母类型，
+   比 JSON 对象小一半以上。鼓点的 letter 是空格，可空格在串里要当分隔符 —— 换成下划线。 */
+function packNotes(list) {
+  return contractNotes(list).map(n =>
+    Math.round(n.t * 1000) + '-' + (n.letter === ' ' ? '_' : n.letter) + '-' +
+    (n.type === 'hold' ? 'h' : n.type === 'drum' ? 'd' : 's') +
+    (n.type === 'hold' ? '-' + Math.round(n.dur * 1000) : '')).join(' ');
+}
+
+/* 和游戏那边同一条正则：毫秒可以是负的，split('-') 会把负号那一刀切错位置 */
+const NOTE_TOK = /^(-?\d+)-(.+?)-([shd])(?:-(\d+))?$/;
+function unpackNotes(str) {
+  return String(str || '').trim().split(/\s+/).filter(Boolean).map(tok => {
+    const p = NOTE_TOK.exec(tok);
+    if (!p) return null;
+    const type = p[3] === 'h' ? 'hold' : p[3] === 'd' ? 'drum' : 'single';
+    const o = { t: +p[1] / 1000, letter: p[2] === '_' ? ' ' : p[2], type: type };
+    if (type === 'hold') o.dur = +p[4] / 1000;
+    return o;
+  }).filter(Boolean);
+}
+
+/* 中文曲目必须走 UTF-8 再 base64：直接 btoa 只认单字节字符，遇到汉字当场抛错 */
+function b64enc(s) {
+  let bin = '';
+  for (const c of new TextEncoder().encode(s)) bin += String.fromCharCode(c);
+  return btoa(bin);
+}
+
+/* 出口最后一道闸：坏码宁可不出。以前 packNotes 双重换算把时间戳全算成 NaN，
+   码照样生成、照样能贴给别人，到了别人那边才变成"所有 note 堆在一点"——
+   出错的这一头必须先看见。 */
+function toCode() {
+  const lv = fullLevel(), charts = {};
+  Object.keys(lv.charts).forEach(k => { charts[k] = packNotes(lv.charts[k].notes); });
+  const bad = Object.keys(charts).filter(k => /NaN|undefined|Infinity/.test(charts[k]));
+  if (bad.length) { toast('导出失败：' + bad.join('/') + ' 档里有坏的时间戳，请重排这几颗'); return ''; }
+  return CODE_VER + ':' + b64enc(JSON.stringify({
+    v: 1, title: lv.title, audio: lv.audio, hint: lv.hint,
+    bpm: lv.bpm, startAt: lv.startAt, duration: lv.duration, charts: charts,
+  }));
+}
+
+/* 推送：写进共享存储。推完顺手 save() —— 推送是"送去游戏"，不是存档，
+   别让人以为它兼了备份的活儿（清了浏览器缓存，共享区是会没的）。 */
+function pushToGame() {
+  const lv = fullLevel();
+  if (!Object.keys(lv.charts).length) { toast('这一首还没排过 note'); return; }
+  const all = readShared();
+  const i = all.findIndex(x => shareId(x) === lv.id);
+  /* 同一首歌的几档谱要落在**同一个条目**里：这次带了哪几档就覆盖哪几档，
+     上次推过、这次没带的档留着（三档本来就常常是分几次排完的）。
+     整条替换的话，先排 EASY 再排 NORMAL 就只剩 NORMAL 了。 */
+  const merged = Object.assign({}, (i >= 0 && all[i].charts) || {}, lv.charts);
+  const out = Object.assign({}, lv, { charts: merged });
+  if (i >= 0) all[i] = out; else all.push(out);
+  try { localStorage.setItem(SHARE_KEY, JSON.stringify(all)); }
+  catch (e) { toast('写不进本机存储：' + (e.name || e)); return; }
+  save();
+  const kept = Object.keys(merged).filter(k => !lv.charts[k]);
+  toast('已推送 ✓《' + lv.title + '》' + diffSummary(merged) +
+        (kept.length ? '（' + kept.join('/') + ' 是上次推的，留着了）' : ''));
+}
+
+function readShared() {
+  try { return JSON.parse(localStorage.getItem(SHARE_KEY)) || []; } catch (e) { return []; }
+}
+
+function showCode() {
+  const lv = fullLevel(), ks = Object.keys(lv.charts);
+  if (!ks.length) { toast('这一首还没排过 note'); return; }
+  let n = 0;
+  ks.forEach(k => { n += lv.charts[k].notes.length; });
+  const code = toCode();
+  if (!code) return;                     // toCode 已经 toast 过原因了，别再弹个空框
+  /* 码里到底带走了哪几档、各多少颗，必须当场说一声。
+     三档谱是分几次排出来的，没这句只能去游戏里数按钮，出问题全靠猜。 */
+  toast('关卡码已生成：《' + lv.title + '》' + diffSummary(lv.charts) + ' · 共 ' + n + ' 颗');
+  showOverlay('/* ' + lv.title + ' · ' + diffSummary(lv.charts) + ' · 共 ' + n + ' 颗\n' +
+    '   对方把下面整段复制，在游戏选关界面点「粘贴关卡码」贴进去即可。\n' +
+    '   注意：这份带不走音乐，对方得自备 ' + lv.audio + '（' + (lv.hint || '请向作者要') + '） */\n\n' +
+    code);
+}
+function showOverlay(s) {
+  el('snipText').value = s;
+  el('snipText').hidden = false;          // 上一次可能停在曲目管理那屏
+  el('ovList').hidden = true;
+  el('ovTitle').textContent = 'LEVELS 片段（剪贴板不可用，请手动全选复制）';
+  el('overlay').hidden = false;
+  el('snipText').select();
+}
+
+function selectSong(id) {
+  const song = songOf(id);
+  const had = loadSaved(song);
+  if (!had) { st = blankState(song); undoStack = []; }
+  stopPlay();                     // 换歌 = 换音频，先停掉（也顺带清掉上一次的 rAF）
+  audioFileRef = null;            // 那个 File 属于上一首，别让「测速」拿它去测新歌
+  // src 优先用本条曲目自己的（手动载入的音频/自己加的歌），没有再退回 file。
+  // 但 src 得先过 usableSrc —— 失效的 blob 会让这一首彻底放不出声。
+  au.src = usableSrc(song.src) || song.file || '';   // 相对路径，file:// 下直接能放
+  flashed = new Set();
+  st.viewBeat = st.viewBeat < 0 ? -1 : st.viewBeat;
+  el('lyric').value = st.text;
+  el('lyricInfo').textContent = '已保存进度：' + (had ? '有（已载入）' : '无，从头开始');
+  renderSongs(song.id);
+  refresh();
+  resize();
+  toast(had ? '已载入本地存档' : '空白工程，开始打字铺谱');
+}
+
+/* =====================================================================
+   ⑫ 新音频：载入 / 扫 songs/ / 存为曲目
+   --------------------------------------------------------------------
+   之前编辑器的音频只来自 SONGS 里写死的那一条，新放进去的 mp3 根本没入口 ——
+   这不是"读不到文件"，是"没人问过它要读哪个"。
+   下面三条都绕开 fetch（file:// 下必被 CORS 拦）：
+   · 载入音频：<input type=file> → URL.createObjectURL → 直接交给 <audio src>
+   · 扫 songs/：按已知文件名试着 load，能读到时长就是有；读不到就问一句要不要手动挑
+   · 存为曲目：把地址记进 localStorage，下次自动带回来
+   ===================================================================== */
+const PROBE_TAGS = ['mp3', 'm4a', 'wav', 'ogg', 'flac'];
+
+/* 从文件名反推歌名：去扩展名、下划线换空格。猜错了用户能在「存为曲目」里改 */
+function titleFromFile(name) {
+  return (name || '').replace(/\.[^.]+$/, '').replace(/[_]+/g, ' ').trim() || '未命名';
+}
+
+/* 挑本机音频：立刻可用（blob: 地址），但这地址活不过关页 —— 提示语里必须说清楚 */
+function pickAudio() { el('audioIn').click(); }
+
+/* 挑完文件先问一句：songs/ 里是不是有同名文件？
+   有 → 用相对路径（持久：下次还在、游戏那边也能用）；
+   没有 → 才退回到临时地址（只活这一次会话，关页就失效）。
+   之前不分青红皂白就用 blob，结果"存为曲目"存了个过期的地址，下次开不了局。 */
+function useAudioFile(file) {
+  if (!file) return;
+  const name = file.name;
+  const rel = SONG_FILE_DIR + name;
+  probeSrc(rel).then(ok => {
+    if (ok) {
+      bindAudio(name, rel, rel);
+      toast('已绑定 songs/' + name + '（相对路径 · 长期可用，游戏里也能用）');
+    } else {
+      const url = URL.createObjectURL(file);
+      liveBlobs.add(url);                       // 登记：只有登记过的 blob 才敢在别处用
+      bindAudio(name, rel, url);
+      toast('已临时载入 ' + name + ' —— 把 mp3 拷进 songs/ 才能长期用');
+    }
+    // File 对象只在用户手挑的这一刻拿得到，留一份给「🎵 测速」复用
+    audioFileRef = file;
+    detectBpm(file);                            // 导入即测，测不出来也不打断
+  });
+}
+
+/* 把音频接进当前工程。src 是"现在真的能播的地址"，file 是留给存档的相对路径 */
+function bindAudio(name, rel, src) {
+  if (st._blob && st._blob !== src) URL.revokeObjectURL(st._blob);   // 上一个临时地址没人用了
+  st._blob = src.startsWith('blob:') ? src : '';
+  st.src = src;
+  st.file = rel;
+  st.audioName = name;
+  au.src = src;
+  refresh();
+  probeDuration(name, src);
+}
+
+/* 这个地址解得开吗（能拿到正的时长 = 文件在、且编码被支持） */
+function probeSrc(src) {
+  return new Promise(res => {
+    const a = new Audio();
+    a.preload = 'metadata';
+    let done = false;
+    const fin = v => { if (!done) { done = true; clearTimeout(t); res(v); } };
+    const t = setTimeout(() => fin(false), 4000);   // 文件不存在时有些浏览器不派 error
+    a.addEventListener('loadedmetadata', () => fin(isFinite(a.duration) && a.duration > 0));
+    a.addEventListener('error', () => fin(false));
+    a.src = src;
+  });
+}
+
+/* 读一下时长：用来核对"这首歌到底多长"，顺便验证真的解得开 */
+function probeDuration(name, url) {
+  const a = new Audio();
+  a.preload = 'metadata';
+  a.src = url;
+  a.addEventListener('loadedmetadata', () => {
+    const d = a.duration;
+    if (!isFinite(d) || d <= 0) return;
+    el('lyricInfo').textContent = '音频：' + name + ' · ' + d.toFixed(1) + 's（' +
+      Math.round(d * (st.bpm / 60)) + ' 拍）';
+  });
+  a.addEventListener('error', () => toast('这个文件解不开（浏览器不支持的编码？）'));
+}
+
+/* ===================== BPM 自动检测 =====================
+   实测（2026-10-23，2 首真歌 + 合成基准，数据来自 _bpm.html 原型）：
+   · 真值 113 → 113.4（误差 0.4%）；八段 60s 逐段全是 113.4，SLEEPWALK 十段全 127.7
+   · 但 174 会听成 87、64 会听成 128 —— 半速/倍速是自相关的**固有**歧义：
+     真节拍在 2 倍 lag 处必然也自相关，光看自相关分不出来，所以 ×2 / ÷2 必须常驻
+   · 突出度（峰值 − lag 带中位数）：纯噪声 0.032，真实音乐 0.088~0.269
+     → 低于门槛就拒绝，宁可让人手填也不乱填
+   · 代价：解码 4 分钟的歌 0.2~0.5s，且瞬时占 ~85MB PCM（4 字节 × 双声道 × 整首）
+   · **file:// 下 fetch 被 CORS 拦**，songs/ 里那些字节读不到，
+     所以音频字节只能来自用户刚选的 File —— 这正好就是"导入时"这个时机 */
+const BPM_HOP = 256;              // 每 256 采样一帧 → 44.1k 下 172fps
+const BPM_PROM_MIN = 0.08;        // 突出度门槛：低于它就当"没听出节拍"
+let audioFileRef = null;          // 用户刚选的那个 File（File 对象没法存进 localStorage）
+
+/* 能量包络。整首 PCM 是 decodeAudioData 的固有成本，用完即丢 */
+function bpmEnv(buf) {
+  const n = buf.length, chs = buf.numberOfChannels;
+  const c0 = buf.getChannelData(0);
+  const c1 = chs > 1 ? buf.getChannelData(1) : null;
+  const frames = Math.floor(n / BPM_HOP);
+  const env = new Float32Array(frames);
+  for (let i = 0; i < frames; i++) {
+    const b = i * BPM_HOP;
+    let s = 0;
+    for (let j = 0; j < BPM_HOP; j++) { const v = c0[b + j]; s += v * v; }
+    if (c1) for (let j = 0; j < BPM_HOP; j++) { const v = c1[b + j]; s += v * v; }
+    env[i] = Math.sqrt(s / (BPM_HOP * chs));
+  }
+  return { env: env, rate: buf.sampleRate / BPM_HOP };
+}
+
+/* onset：只留"变响"的部分 + z-score。不压动态范围的话响段落会把整首盖平 */
+function bpmOnset(env) {
+  const n = env.length, c = new Float32Array(n), d = new Float32Array(n);
+  for (let i = 0; i < n; i++) c[i] = Math.log1p(env[i] * 20);
+  let sum = 0;
+  for (let i = 1; i < n; i++) { d[i] = Math.max(0, c[i] - c[i - 1]); sum += d[i]; }
+  const mean = sum / n;
+  let vr = 0;
+  for (let i = 1; i < n; i++) { const x = d[i] - mean; vr += x * x; }
+  const sd = Math.sqrt(vr / n) || 1;
+  for (let i = 0; i < n; i++) d[i] = (d[i] - mean) / sd;
+  return d;
+}
+
+/* 自相关：lag 要一直算到 3 倍，因为 comb 打分要看 2L、3L 处是否也自相关 */
+function bpmAutocorr(o, rate, loBpm, hiBpm) {
+  const minLag = Math.max(1, Math.round(rate * 60 / hiBpm));
+  const maxLag = Math.round(rate * 60 / loBpm);
+  const need = 3 * maxLag + 4, n = o.length;
+  const ac = new Float32Array(need + 2);
+  for (let lag = 1; lag <= need; lag++) {
+    const lim = n - lag;
+    let s = 0;
+    for (let i = 1; i < lim; i++) s += o[i] * o[i + lag];
+    ac[lag] = s / (lim - 1 || 1);
+  }
+  let e0 = 0;
+  for (let i = 1; i < n; i++) e0 += o[i] * o[i];
+  const q = e0 / (n - 1) || 1;
+  for (let lag = 1; lag <= need; lag++) ac[lag] /= q;
+  return { ac: ac, minLag: minLag, maxLag: maxLag };
+}
+
+/* 抛物线插值：同时给出峰值位置和峰值高度。
+   只取位置不取高度的话，lag 是 52~172 的整数，会被误当成 0~1 的相关值用（踩过一次） */
+function bpmPeak(ac, lag) {
+  const a = ac[lag - 1] || 0, b = ac[lag] || 0, c = ac[lag + 1] || 0;
+  const den = a - 2 * b + c;
+  let d = 0;
+  if (Math.abs(den) > 1e-12) d = 0.5 * (a - c) / den;
+  if (d > 0.5) d = 0.5; else if (d < -0.5) d = -0.5;
+  return { lag: lag + d, val: b - 0.25 * (a - c) * d };
+}
+
+/* 速度先验：流行曲集中在 90~170。没有它，128 会被判成 64 */
+function bpmPrior(bpm) {
+  const r = Math.log2(bpm / 120) / 0.55;
+  return Math.exp(-0.5 * r * r);
+}
+
+/* 一个窗口的全部候选。突出度 = 峰值 − lag 带中位数：
+   自相关的绝对值分不出有拍/没拍（纯噪声也有 0.03），要看的是它比周围高出多少 */
+function bpmCandidates(ons, rate, loBpm, hiBpm) {
+  const A = bpmAutocorr(ons, rate, loBpm, hiBpm);
+  const out = [];
+  for (let lag = A.minLag; lag <= A.maxLag; lag++) {
+    const p1 = bpmPeak(A.ac, lag), p2 = bpmPeak(A.ac, lag * 2), p3 = bpmPeak(A.ac, lag * 3);
+    // comb：真节拍在 2L、3L 处必然也自相关，随机噪声不会
+    out.push({ bpm: rate * 60 / p1.lag, ac1: p1.val, score: p1.val + 0.5 * p2.val + 0.25 * p3.val });
+  }
+  const v = out.map(c => c.ac1).sort((a, b) => a - b);
+  return { list: out, med: v[v.length >> 1] };
+}
+
+/* 一个窗口的答案：先验 × comb 分，取最高 */
+function bpmBest(ons, rate) {
+  const C = bpmCandidates(ons, rate, 60, 200);
+  let best = null;
+  for (const c of C.list) {
+    const s = c.score * bpmPrior(c.bpm);
+    if (!best || s > best.s) best = { bpm: c.bpm, s: s, prom: c.ac1 - C.med };
+  }
+  return best;
+}
+
+/* 多窗口投票：单窗口会飘，让每个窗口各投一票 */
+function bpmVote(buf) {
+  const E = bpmEnv(buf);
+  const dur = buf.length / buf.sampleRate;
+  const wins = [[0, 0]];
+  if (dur > 90) { wins.push([dur * 0.2, 60], [dur * 0.5, 60]); }
+  const votes = [];
+  for (const w of wins) {
+    const a = Math.floor(w[0] * E.rate);
+    const b = w[1] ? Math.min(E.env.length, a + Math.round(w[1] * E.rate)) : E.env.length;
+    if (b - a < E.rate * 8) continue;
+    // 每个窗口各自 z-score：让弱段落也参与，不被响段落压平
+    const v = bpmBest(bpmOnset(E.env.slice(a, b)), E.rate);
+    if (v) votes.push(v);
+  }
+  return bpmCluster(votes);
+}
+
+/* 聚类：互为 3% 以内算同一个答案，票数多的胜 */
+function bpmCluster(votes) {
+  const cl = [];
+  for (const v of votes) {
+    let hit = null;
+    for (const c of cl) if (Math.abs(Math.log2(c.bpm / v.bpm)) < 0.03) { hit = c; break; }
+    if (hit) {
+      hit.sumBpm += v.bpm; hit.sum += v.s; hit.n++;
+      hit.prom = Math.max(hit.prom, v.prom);
+    } else cl.push({ bpm: v.bpm, sumBpm: v.bpm, sum: v.s, n: 1, prom: v.prom });
+  }
+  cl.sort((a, b) => b.sum - a.sum);
+  if (!cl.length) return null;
+  const t = cl[0];
+  return { bpm: t.sumBpm / t.n, votes: t.n, of: votes.length, prom: t.prom };
+}
+
+/* 解码单独拎出来，才好界定"文件解不开"这一种失败 */
+async function decodeAudioFile(file) {
+  try {
+    const ab = await file.arrayBuffer();
+    return await new OfflineAudioContext(1, 1, 44100).decodeAudioData(ab);
+  } catch (err) { return null; }
+}
+
+/* 听一遍音频猜 BPM。解码 4 分钟的歌要 0.2~0.5s 且瞬时占 ~85MB PCM，
+   所以只在导入时跑一次，绝不放进播放路径 */
+async function detectBpm(file) {
+  if (!file) {
+    toast('先点「载入音频」选一个文件才测得了速：浏览器不让我直接读 songs/ 里的字节');
+    return;
+  }
+  el('btnBpm').disabled = true; el('btnBpm').textContent = '测速中…';
+  await new Promise(r => setTimeout(r, 30));        // 让"测速中…"先画出来
+  const buf = await decodeAudioFile(file);
+  const res = buf ? bpmVote(buf) : null;
+  el('btnBpm').disabled = false; el('btnBpm').textContent = '🎵 测速';
+  if (!buf) { toast('这个文件解不开，测不了速'); return; }
+  if (!res || res.prom < BPM_PROM_MIN) {
+    toast('没听出稳定节拍（突出度 ' + (res ? res.prom.toFixed(3) : '0') +
+          '，门槛 ' + BPM_PROM_MIN + '），BPM 得手填');
+    return;
+  }
+  const v = Math.max(40, Math.min(300, Math.round(res.bpm)));
+  pushUndo();                                      // 测出来的值也是一步操作，能撤
+  st.bpm = v; st.dirty = true;
+  toast('测到 ' + v + ' BPM（' + res.votes + '/' + res.of + ' 段一致，突出度 ' +
+        res.prom.toFixed(3) + '）· 听着慢/快了一半就按 ×2 或 ÷2');
+  refresh();
+}
+
+/* 半速/倍速纠偏。测出来的和手填的都管用 */
+function flipBpm(k) {
+  const v = Math.max(40, Math.min(300, Math.round(st.bpm * k)));
+  if (v === st.bpm) { toast('BPM 已经顶到 40~300 的边界了'); return; }
+  pushUndo();
+  const old = st.bpm;
+  st.bpm = v; st.dirty = true;
+  toast('BPM ' + old + ' → ' + v + '（半速/倍速纠偏）');
+  refresh();
+}
+
+/* 扫 songs/。
+   **浏览器的硬限制：列不出目录**（file:// 下 fetch 也被 CORS 拦），所以"里面有什么"
+   只能靠：① 已知曲目 ② 用户手填。新放的 mp3 不填名字就永远发现不了 ——
+   这一条必须写进提示，否则点了没反应会被当成 bug。
+   填了名字就逐个试，解得开的直接登记成曲目（不用再走一次「存为曲目」）。 */
+async function scanSongsDir() {
+  const names = new Set();
+  allSongs().forEach(s => { if (s.file) names.add(s.file.replace(/^songs\//, '')); });
+  if (st.audioName) names.add(st.audioName);
+  const extra = (prompt(
+    '浏览器列不出 songs/ 里有哪些文件，麻烦手填文件名。\n' +
+    '多个用逗号隔开，例如：SLEEPWALK.mp3, 别的歌.m4a\n' +
+    '（留空 = 只检查已有的 ' + names.size + ' 个）', '') || '').trim();
+  if (extra) extra.split(/[,，;；\n]/).forEach(t => { const v = t.trim(); if (v) names.add(v); });
+
+  const tried = Array.from(names);
+  if (!tried.length) { toast('没有可试的文件名'); return; }
+  const okNames = [];
+  for (const n of tried) { if (await probeSrc(SONG_FILE_DIR + n)) okNames.push(n); }
+
+  // 解得开、又还没登记的 → 直接收进曲目表
+  let added = 0;
+  const mine = loadMySongs();
+  okNames.forEach(n => {
+    const rel = SONG_FILE_DIR + n;
+    if (allSongs().some(s => (s.file || '').replace(/^songs\//, '') === n)) return;
+    mine.push({
+      id: 'my-' + Date.now().toString(36) + '-' + added,
+      title: titleFromFile(n), file: rel, src: '',
+      hint: 'songs/ 下的 ' + n, bpm: st.bpm || 120, offset: 0, text: '', mine: true,
+    });
+    added++;
+  });
+  if (added) { saveMySongs(mine); renderSongs(); }
+
+  const bad = tried.filter(n => !okNames.includes(n));
+  toast('试了 ' + tried.length + ' 个：' + okNames.length + ' 个能放' +
+        (added ? '，新登记 ' + added + ' 首' : '') +
+        (bad.length ? '；放不了：' + bad.join('、') : ''));
+}
+
+/* 存为曲目：把当前音频登记到下拉框里，下次打开编辑器还在。
+   **只登记长期地址** —— blob 存进去就是"下次打开这首放不了"的祸根（第 36 轮踩过），
+   所以这里不接受临时地址，直接把人引导到"先拷进 songs/"这条正路上。 */
+function saveAsSong() {
+  const rel = (st.file && !st.file.startsWith('blob:')) ? st.file : '';
+  const src = usableSrc(st.src);
+  const keep = rel || (src && !src.startsWith('blob:') ? src : '');
+  if (!keep) {
+    toast('当前只是临时地址 —— 先把 mp3 拷进 songs/，再点「扫 songs/」填文件名登记');
+    return;
+  }
+  const title = (prompt('曲名（会出现在下拉框里）', titleFromFile(st.audioName || keep)) || '').trim();
+  if (!title) { toast('没填曲名，取消保存'); return; }
+  const mine = loadMySongs().filter(s => s.title !== title);
+  mine.push({
+    id: 'my-' + Date.now().toString(36),
+    title, file: rel || keep, src: keep,          // src 一律存能长期用的那个
+    hint: st.audioName ? ('songs/ 下的 ' + st.audioName) : '',
+    bpm: st.bpm, offset: st.offset, text: st.text || '',
+    mine: true,
+  });
+  if (!saveMySongs(mine)) return;
+  renderSongs();
+  toast('已存为曲目「' + title + '」· 用相对路径 ' + keep);
+}
+
+/* 把曲目列表画进下拉框。加完歌、存完曲目都走它，别各自拼一遍 option */
+function renderSongs(selected) {
+  el('song').innerHTML = allSongs().map(s =>
+    '<option value="' + s.id + '">' + (s.mine ? '★ ' : '') + esc(s.title) + '</option>').join('');
+  el('song').value = selected || st.song;
+}
+
+/* 曲名是用户在 prompt 里随手填的，拼进 innerHTML 之前必须转义：
+   一个写了 <img onerror=...> 的曲名不该有机会执行。 */
+function esc(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, c =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+/* =====================================================================
+   ⑬ 删除曲目 / 清理存档
+   --------------------------------------------------------------------
+   两类曲目删法不同，必须先分清：
+   · 自己加的（★，存在 localStorage 的 MY_KEY）→ 可以删，谱面存档一起清；
+   · 官方曲目 → 写在 editor.html 的 SONGS 数组里，是**代码**，删不掉，
+     只能改源码。这里明确说出来，别让按钮点了没反应还不知道为什么。
+   ===================================================================== */
+
+/* 这首曲目存档里一共有多少颗 note（三档合计）—— 删之前让人看清要丢多少东西 */
+function savedNoteCount(id) {
+  try {
+    const o = JSON.parse(localStorage.getItem(storeKey(id)));
+    if (!o || !o.diffs) return 0;
+    return Object.values(o.diffs).reduce((n, d) => n + ((d && d.notes) ? d.notes.length : 0), 0);
+  } catch (e) { return 0; }
+}
+
+/* 孤儿存档：曲目已经不在列表里，localStorage 却还留着它的谱面。
+   典型来路是旧版存的、或曲目条目被清过而存档没跟着走。 */
+function orphanKeys() {
+  const ids = new Set(allSongs().map(s => s.id));
+  const out = [];
+  for (let i = 0; i < localStorage.length; i++) {
+    const k = localStorage.key(i);
+    if (k && k.startsWith(STORE_PREFIX) && !ids.has(k.slice(STORE_PREFIX.length))) out.push(k);
+  }
+  return out;
+}
+
+/* 每行三个动作，按"动的东西有多大"从左到右排：
+   清谱面 < 断音频 < 删整首。内置曲目只能做第一个。 */
+function openSongMgr() {
+  el('ovTitle').textContent = '曲目 / 音频 / 谱面管理 · ★ 是你自己加的';
+  el('snipText').hidden = true;
+  const box = el('ovList');
+  box.hidden = false;
+  const rows = allSongs().map(s => {
+    const cnt = savedNoteCount(s.id);
+    const use = audioToUse(s);                 // 实际会去播的那个地址（已过滤失效 blob）
+    let act = '<button class="del" data-clr="' + esc(s.id) + '">清谱面</button>';
+    if (s.mine) {
+      act += '<button class="del" data-unl="' + esc(s.id) + '">断音频</button>' +
+             '<button class="del" data-del="' + esc(s.id) + '">删整首</button>';
+    } else {
+      act += '<span class="fixed">内置 · 删不掉</span>';
+    }
+    return '<div class="mrow"><span class="nm">' + (s.mine ? '★ ' : '') + esc(s.title) + '</span>' +
+           '<span class="meta">' + audioLabel(use) + ' · 存档 ' + cnt + ' 颗</span>' + act + '</div>';
+  }).join('');
+  const orphans = orphanKeys();
+  const foot = '<div id="ovFoot">' +
+    '<div>音频文件本身在磁盘上（<code>songs/</code>），浏览器删不了 —— 这里只能删掉"登记"，' +
+    '真要腾空间得去文件夹里手动删。</div>' +
+    '<div style="margin-top:4px">' + (orphans.length
+      ? '另有 ' + orphans.length + ' 条孤儿存档（曲目已不在列表里）：' +
+        '<button id="btnPurge" class="del">全部清掉</button>'
+      : '没有孤儿存档 ✓') + '</div></div>';
+  box.innerHTML = rows + foot;
+  const bind = (attr, fn) => box.querySelectorAll('[' + attr + ']').forEach(b => {
+    b.onclick = () => fn(b.getAttribute(attr));
+  });
+  bind('data-del', deleteSong);
+  bind('data-clr', clearChart);
+  bind('data-unl', unlinkAudio);
+  const purge = el('btnPurge');
+  if (purge) purge.onclick = purgeOrphans;
+  el('overlay').hidden = false;
+}
+
+/* 这首曲目实际会去播哪个地址：跟 selectSong 同一条规则，面板上看到的才是真的 */
+function audioToUse(s) { return usableSrc(s.src) || usableSrc(s.file) || ''; }
+
+/* 把地址画成一句人话，顺带把"能不能长期用"讲清楚 ——
+   「临时」那两字是排查"为什么这首放不了"时唯一有用的线索。 */
+function audioLabel(use) {
+  if (!use) return '<span class="warn">无音频</span>';
+  if (use.startsWith('blob:')) return '<span class="warn">临时地址（关页就失效）</span>';
+  return esc(use) + ' <span class="ok">· 长期可用</span>';
+}
+
+/* 长长的 blob:/绝对路径只留最后一截，面板上一行放得下 */
+function shortPath(p) {
+  const s = String(p || '');
+  if (s.startsWith('blob:')) return 'blob:（临时，本次会话有效）';
+  return s.split('/').pop() || s;
+}
+
+/* 只清谱面：曲目和音频都留着，回到"空白工程"状态 */
+function clearChart(id) {
+  const s = allSongs().find(x => x.id === id);
+  if (!s) return;
+  const cnt = savedNoteCount(id);
+  if (!cnt && st.song !== id) { toast('这首本来就没存谱面'); return; }
+  if (!confirm('清空「' + s.title + '」的谱面存档（' + cnt + ' 颗）？\n曲目和音频保留。')) return;
+  localStorage.removeItem(storeKey(id));
+  if (st.song === id) resetToBlank(s);      // 清的正是当前这首 → 画面也得回到空白
+  toast('已清空「' + s.title + '」的谱面 ✓');
+  openSongMgr();
+}
+
+/* 断音频：把这首曲目登记的音频来源抹掉，谱面留着（换一首歌来配这份谱时用得上） */
+function unlinkAudio(id) {
+  const s = allSongs().find(x => x.id === id);
+  if (!s || !s.mine) { toast('内置曲目的音频写在源码里，改不了'); return; }
+  if (!confirm('解除「' + s.title + '」的音频关联？谱面保留，之后可以再「载入音频」重配。')) return;
+  const mine = loadMySongs().map(x => x.id === id ? Object.assign({}, x, { src: '', file: '' }) : x);
+  if (!saveMySongs(mine)) return;
+  if (st.song === id) {
+    st.src = ''; st.file = ''; st.audioName = '';
+    stopPlay();
+    au.removeAttribute('src');
+    au.load();                               // 不然浏览器还攥着上一个音频
+    refresh();
+  }
+  toast('已解除「' + s.title + '」的音频 ✓');
+  openSongMgr();
+}
+
+/* 当前工程回到空白：清谱、断音频之后都要走它，保证画面跟存储一致 */
+function resetToBlank(song) {
+  stopPlay();
+  st = blankState(song);
+  undoStack = [];
+  flashed = new Set();
+  el('lyric').value = st.text;
+  el('lyricInfo').textContent = '已保存进度：无，从头开始';
+  refresh();
+}
+
+function deleteSong(id) {
+  const s = allSongs().find(x => x.id === id);
+  if (!s) { toast('这首已经不在列表里了'); return; }
+  if (!s.mine) {
+    toast('内置曲目删不掉：它写在 editor.html 的 SONGS 数组里，得改源码');
+    return;
+  }
+  const cnt = savedNoteCount(id);
+  if (!confirm('删除曲目「' + s.title + '」？\n它的谱面存档（' + cnt +
+               ' 颗 note）会一起清掉，Ctrl+Z 救不回来。')) return;
+  if (!saveMySongs(loadMySongs().filter(x => x.id !== id))) return;
+  localStorage.removeItem(storeKey(id));                 // 谱面存档跟着走，不留垃圾
+  toast('已删除「' + s.title + '」');
+  if (st.song === id) selectSong(allSongs()[0].id);      // 删的正是当前这首 → 换到第一首
+  else renderSongs(st.song);
+  openSongMgr();                                         // 列表就地重画
+}
+
+function purgeOrphans() {
+  const keys = orphanKeys();
+  if (!keys.length) { toast('没有可清的孤儿存档'); return; }
+  if (!confirm('清掉 ' + keys.length + ' 条孤儿存档？它们的曲目已经不在列表里了。')) return;
+  keys.forEach(k => localStorage.removeItem(k));
+  toast('已清理 ' + keys.length + ' 条孤儿存档 ✓');
+  openSongMgr();
+}
+
+/* 关弹层时把 textarea 恢复出来，否则下次「复制片段」会看不见内容 */
+function closeOverlay() {
+  el('overlay').hidden = true;
+  el('snipText').hidden = false;
+  el('ovList').hidden = true;
+  el('ovTitle').textContent = 'LEVELS 片段（剪贴板不可用，请手动全选复制）';
+}
+
+function init() {
+  loadTune();                     // 音量是本机偏好，先读出来再渲染，控件才对得上
+  renderSongs(allSongs()[0].id);
+  selectSong(allSongs()[0].id);
+}
+init();
+</script>
+</body>
+</html>
